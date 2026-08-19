@@ -7,6 +7,9 @@ maths is right — so the engine reimplements Black-76 rather than importing it,
 
 Start here:
 
+- [`docs/onboarding.md`](./docs/onboarding.md) — if this session is new to the project, read this
+  first. Setup, the reading order, how tickets are picked, and the traps that have already cost
+  time once.
 - [`CONTEXT.md`](./CONTEXT.md) — the domain glossary. Read it before writing anything; several terms
   in this domain are ambiguous and this file is what stops the two halves of the codebase meaning
   different things by "payoff".
