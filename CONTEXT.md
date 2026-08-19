@@ -50,7 +50,7 @@ _Avoid_: Valuation date, as-of date
 A single option contract within a Strategy: its strike, its type (call or put), its direction
 (bought or sold), its Quantity, the price it was entered at, and its implied volatility. A Leg
 does **not** know its Lot Size.
-_Avoid_: Position (see below), contract, trade
+_Avoid_: Position, contract, trade
 
 **Quantity**:
 How many of a Leg were traded, carried on the Leg itself. Direction is separate from Quantity —
@@ -66,7 +66,12 @@ _Avoid_: Contract size, multiplier
 An ordered list of Legs. Nothing more. "Iron condor" is not a kind of Strategy — it is a shape
 that a list of four Legs happens to have, and every metric in this project is computed from the
 list without knowing or caring what the shape is called.
-_Avoid_: Spread, combination, structure
+_Avoid_: Spread, combination, structure, Position
+
+**Position** is deliberately not a term. A Strategy that has actually been entered and one being
+analysed hypothetically are structurally identical — every Leg carries an Entry Premium either
+way, and nothing in a payoff diagram behaves differently depending on where that price came from.
+Naming the distinction would imply the code checks it. It does not.
 
 **Preset**:
 A convenience that builds a well-known list of Legs — "long straddle", "iron condor" — so the
@@ -78,6 +83,13 @@ _Avoid_: Template, strategy type, builder
 The human name inferred *from* a list of Legs by recognising its shape, as when a screen reads
 "2 selected — Long Straddle". Detection runs after the fact and is purely descriptive; a
 Strategy is valid and fully computable whether or not it matches any known shape.
+
+**Naked**:
+A Strategy of exactly one Leg. There are four, and they are named individually rather than
+parameterised, because a trader reads them as four distinct trades with four distinct risk
+profiles: **Long Call**, **Short Call**, **Long Put**, **Short Put**. Type and direction together
+give the name.
+_Avoid_: Single-leg, outright, naked buy / naked sell
 
 ## Results
 
@@ -100,6 +112,16 @@ _Avoid_: Cost, LTP, entry price
 The Entry Premiums of every Leg in a Strategy, summed with direction. Positive means paid out
 (a debit); negative means received (a credit).
 _Avoid_: Cost of the strategy, net cost
+
+**Breakeven**:
+A Spot at which the **Expiry** P&L of a Strategy is zero. A fixed property of the Legs, so it does
+not move while a user drags the Target Date slider. A Strategy may have none, one, or several.
+_Avoid_: Break-even point, BEP, zero crossing
+
+**Target-Date Crossing**:
+A Spot at which the P&L *on the Target Date* is zero. A different quantity from a Breakeven — it
+moves continuously as the Target Date changes, and the two sit at different Spots on the chart.
+The word "breakeven" is never used for it, because a label that means two numbers means neither.
 
 **Unbounded**:
 The state of a maximum profit or maximum loss that has no finite value, shown to a user as
