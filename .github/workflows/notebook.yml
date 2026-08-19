@@ -1,0 +1,44 @@
+name: Notebook
+
+# The notebooks are executed, not merely linted. Until the golden-file test lands
+# in tests/ (issue #12, part b), notebooks/01_payoff_structures.ipynb IS the proof
+# that our Black-76 reproduces greeks.parquet - it carries the oracle assertions,
+# the payoff_at_date(T=0) == payoff_at_expiry identity and the straddle premium
+# check. A rotted notebook is a rotted proof.
+#
+# Path-filtered, because it is the slow job and most pull requests cannot break it.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "notebooks/**"
+      - "Data/**"
+      - "requirements.txt"
+      - ".github/workflows/notebook.yml"
+  push:
+    branches: [main]
+    paths:
+      - "notebooks/**"
+      - "Data/**"
+      - "requirements.txt"
+      - ".github/workflows/notebook.yml"
+
+concurrency:
+  group: notebook-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: execute notebooks
+        run: |
+          jupyter nbconvert --to notebook --execute \
+            --output-dir "${RUNNER_TEMP}" notebooks/*.ipynb

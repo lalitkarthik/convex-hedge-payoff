@@ -1,0 +1,15 @@
+# Test and lint tooling. Not needed to run the notebooks.
+pytest>=8.0
+ruff>=0.6
+
+# Second opinion on the pricing maths (issue #3). MIT-licensed and implements
+# Black on the forward, which is our model. NOT a runtime dependency: a
+# disagreement between vollib and our core must surface as a test failure,
+# never as something we silently inherit.
+#
+# Commented out until somebody proves it reproduces greeks.parquet - see #3.
+# vollib>=1.0.11
+
+# Notebook execution in CI (.github/workflows/notebook.yml)
+nbconvert>=7.0
+ipykernel>=6.0
