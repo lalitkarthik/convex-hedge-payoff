@@ -1,0 +1,8 @@
+# research / notebook
+jupyterlab>=4.0
+nbformat>=5.9
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.1
+pyarrow>=14.0
+scipy>=1.11
