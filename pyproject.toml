@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Notebooks are checked by executing them (see .github/workflows/notebook.yml),
+# which is a stronger guarantee than linting them.
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+# Deliberately narrow to start: pycodestyle, pyflakes, import order.
+# Tighten later (UP, B, SIM) once there is code to tighten against - a first CI
+# run that fails on style nobody agreed to teaches the wrong lesson.
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
