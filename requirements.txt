@@ -11,3 +11,8 @@ scipy>=1.11
 # The shared types are pydantic models: the seam validates at the boundary
 # rather than trusting a caller, so the ban on NaN is enforced by the type.
 pydantic>=2.7
+
+# http surface
+# One process serves the engine; uvicorn is how it runs outside a test client.
+fastapi>=0.110
+uvicorn>=0.29
