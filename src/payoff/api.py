@@ -1,6 +1,7 @@
 """The HTTP surface.
 
-One endpoint, and it is **deliberately fat** (#23): it returns everything about a
+Two endpoints. One returns the Chain at a moment; the other is **deliberately fat**
+(#23) and returns everything about a
 Strategy in a single response. Splitting it would mean several round trips carrying the
 same Legs and recomputing the same curve, and the trader would watch the numbers arrive
 after the chart they belong to.
@@ -11,7 +12,7 @@ after the chart they belong to.
 from fastapi import FastAPI
 
 from payoff import chain, strategy
-from payoff.models import AnalysisRequest, AnalysisResponse
+from payoff.models import AnalysisRequest, AnalysisResponse, ChainResponse
 
 app = FastAPI(title="convex-hedge payoff engine")
 
@@ -28,3 +29,9 @@ def analyse(request: AnalysisRequest) -> AnalysisResponse:
         curve=strategy.curve(legs, spot),
         metrics=strategy.metrics(legs),
     )
+
+
+@app.get("/chain", response_model=ChainResponse)
+def read_chain(moment: str) -> ChainResponse:
+    """The Chain as-of a moment: one row per strike, call and put either side."""
+    return chain.as_of_view(moment)

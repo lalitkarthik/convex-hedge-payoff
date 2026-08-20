@@ -146,3 +146,54 @@ class AnalysisResponse(BaseModel):
 
     curve: Curve
     metrics: Metrics
+
+
+class ChainQuote(BaseModel):
+    """One side of one strike, as of a moment.
+
+    There is no implied volatility here. It is a property of the strike and is carried
+    once on the row, not once per side (#28).
+    """
+
+    last: Finite
+    open_interest: Finite
+    volume: Finite
+    age_minutes: int = Field(ge=0)
+    """How stale this bar is, in whole minutes. A quote is never from the future, and
+    bars are one minute wide. #31 dims on it; this is where it is emitted."""
+
+    delta: Finite
+    """Per side, and genuinely so: a call and its put at one strike have deltas one
+    apart rather than equal. That is the opposite of implied volatility, and the two
+    are easy to conflate."""
+
+
+class ChainRow(BaseModel):
+    """One strike: calls on the left, puts on the right, the strike down the middle.
+
+    Either side may be absent. Only strikes that actually traded in a minute have a
+    bar, and served as-of a strike may have been quoted on one side only.
+    """
+
+    strike: Finite
+    iv: Finite | None = None
+    """One implied volatility for the strike, from its freshest quote - not one per
+    side. Served as-of, a call and its put can be minutes apart and quote genuinely
+    different volatilities; publishing both would contradict the model that produced
+    them (#28)."""
+
+    call: ChainQuote | None = None
+    put: ChainQuote | None = None
+
+
+class ChainResponse(BaseModel):
+    """The Chain a trader browses, as-of one moment."""
+
+    moment: str
+    spot: Finite
+    expiry: str
+    """Text, not a dropdown: the dataset holds exactly one Expiry, which is why a
+    calendar or a diagonal has no second Leg to reference and is unbuildable here
+    rather than merely deprioritised."""
+
+    rows: list[ChainRow]
