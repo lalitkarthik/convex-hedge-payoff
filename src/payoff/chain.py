@@ -83,6 +83,20 @@ def spot_at(moment: str | pd.Timestamp) -> float:
     return float(rows.spot.iloc[-1])
 
 
+def at_the_money(moment: str | pd.Timestamp) -> float:
+    """The quoted strike nearest to Spot.
+
+    Nearest **quoted** strike rather than Spot rounded to the grid: on a thin minute
+    the arithmetic answer may not be quoted at all, and a Preset that opens with an
+    unquoted Leg is worse than one that opens one strike away.
+    """
+    rows = snapshot(moment)
+    if rows.empty:
+        raise StrikeNotQuoted(0.0, "--")
+    spot = spot_at(moment)
+    return float(rows.strike.iloc[(rows.strike - spot).abs().argmin()])
+
+
 def resolve_legs(requests: list[LegRequest], moment: str | pd.Timestamp) -> list[Leg]:
     """Turn what the client asked for into Legs the engine can price.
 

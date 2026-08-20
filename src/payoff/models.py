@@ -197,3 +197,16 @@ class ChainResponse(BaseModel):
     rather than merely deprioritised."""
 
     rows: list[ChainRow]
+
+
+class PresetResponse(BaseModel):
+    """What the picker offers, and what one of them builds.
+
+    The Legs come back as **requests**, not as resolved Legs: a Preset hands the client
+    exactly what a trader would have picked by hand, and it goes back through the same
+    endpoint. That is what makes "analysing a Preset" and "selecting its Legs by hand"
+    the same operation rather than two paths that agree.
+    """
+
+    presets: list[str]
+    legs: list[LegRequest] = []
