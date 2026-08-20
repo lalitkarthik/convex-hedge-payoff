@@ -73,12 +73,12 @@ conflict is a symptom rather than an accident.
 | `ci.yml` | `ruff check` and `pytest` | every pull request and push to `main` |
 | `notebook.yml` | executes every notebook | only when `notebooks/`, `Data/` or `requirements.txt` change |
 
-Notebooks are **executed**, not merely linted. Until the golden-file test moves into
-`tests/`, `notebooks/01_payoff_structures.ipynb` *is* the proof that our Black-76
-reproduces `greeks.parquet` — it carries the oracle assertions, the
-`payoff_at_date(T=0) == payoff_at_expiry` identity and the straddle premium check.
-A rotted notebook is a rotted proof. It is path-filtered because it is the slow job
-and most pull requests cannot break it.
+Notebooks are **executed**, not merely linted. The golden-file test has moved into
+`tests/test_oracle.py` (#26), so the oracle assertions now run in the standard `test`
+job rather than in the notebook. `notebooks/01_payoff_structures.ipynb` covers the
+payoff structures instead, and still carries the straddle premium check and the
+defined-risk cap arithmetic. A rotted notebook is a rotted proof. It is path-filtered
+because it is the slow job and most pull requests cannot break it.
 
 The ruff ruleset is deliberately narrow to begin with (`E`, `F`, `I`, `W`). Tighten
 it once there is code to tighten against.
