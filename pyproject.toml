@@ -13,4 +13,6 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# src layout: the package is not installed, so tell pytest where it lives.
+pythonpath = ["src"]
 addopts = "-q"

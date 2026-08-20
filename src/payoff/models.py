@@ -1,0 +1,148 @@
+"""The seam: the shared types both halves of the codebase build against.
+
+#23 puts this module before everything else, and it is the one file where a merge
+conflict is a symptom rather than an accident (CONTRIBUTING.md, #11). It holds types
+and nothing else - no maths, no I/O, no lookups.
+
+The vocabulary is `CONTEXT.md`'s, deliberately: the words that are ambiguous in the
+wild are pinned here so the two halves cannot mean different things by them.
+"""
+
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+OptionType = Literal["CE", "PE"]
+"""Call or put, in the notation the dataset itself uses."""
+
+Direction = Literal[1, -1]
+"""Bought or sold. Separate from Quantity, so a Leg is never held at a negative
+quantity (CONTEXT.md) - the two encodings would produce the same curve today and
+disagree the first time anything sums or displays Quantity."""
+
+Quantity = Annotated[int, Field(ge=1)]
+"""How many of a Leg were traded. At least one; the sign lives in Direction."""
+
+Finite = Annotated[float, Field(allow_inf_nan=False)]
+"""A real number, and nothing else.
+
+ADR-0001 bans NaN in the core and the API contract bans it on the wire; enforcing it
+on the type means it cannot reach the wire however the layers above are rewritten. An
+infinity is banned with it - Unbounded is `None`, which is a different thing.
+"""
+
+Unbounded = Finite | None
+"""A maximum that may have no finite value. `None` serialises as JSON `null` and is
+shown to a trader as "Unlimited" (CONTEXT.md); it is never an infinity token and never
+a string."""
+
+
+class LegRequest(BaseModel):
+    """A Leg as a client is allowed to describe it.
+
+    Deliberately narrower than a `Leg`: there is no implied volatility here, because
+    the server looks it up (#23). A wrong volatility does not fail loudly - it produces
+    a plausible chart that nothing downstream would catch - so the field does not exist
+    to be got wrong, and unknown fields are rejected rather than ignored.
+
+    Entry Premium is the one price a trader may legitimately supply (story 18, "what if
+    I had entered at X"). Absent, the Chain's last traded price is used.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strike: float
+    option_type: OptionType
+    direction: Direction
+    quantity: Quantity = 1
+    entry_premium: float | None = None
+
+
+class Leg(BaseModel):
+    """A single option contract within a Strategy.
+
+    Strike, type, direction, Quantity, the price it was entered at, and its implied
+    volatility - and **not** its Lot Size. Lot Size is a multiplier applied when
+    results are presented, never a property stored here, because the exchange revises
+    it and every stored Leg would be silently wrong the day it changes (CONTEXT.md).
+    """
+
+    strike: float
+    option_type: OptionType
+    direction: Direction
+    quantity: Quantity
+    entry_premium: float
+    iv: float
+
+
+class AnalysisRequest(BaseModel):
+    """Analyse one Strategy, as-of one moment.
+
+    There is no Strategy type: a Strategy is an ordered list of Legs and nothing more
+    (CONTEXT.md). The order is the order the trader built them in, and it is preserved
+    because the per-Leg Greeks table (#27) is read alongside the Legs on screen.
+
+    The moment is what the whole response is served as-of - the Chain, the Entry
+    Premiums and the volatilities all come from it, so it is asked for once here rather
+    than per Leg.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    moment: str
+    legs: list[LegRequest]
+
+
+class Metrics(BaseModel):
+    """The four numbers under the chart, plus the ratio between two of them.
+
+    Every one of them is a property of the Legs at Expiry. Net Premium is signed the
+    way CONTEXT.md signs it: positive is paid out (a debit), negative is received (a
+    credit).
+    """
+
+    max_profit: Unbounded
+    max_loss: Unbounded
+    breakevens: list[Finite]
+    net_premium: Finite
+    reward_risk: Unbounded
+    """Max Profit over the magnitude of Max Loss. `None` when either side is Unbounded
+    or when there is no loss to divide by - a ratio against Unlimited has no meaning,
+    and publishing a large number instead would read as a good trade."""
+
+
+class Curve(BaseModel):
+    """The chart's line: P&L at Expiry across a range of Spot values.
+
+    Two parallel arrays, as the prototype in #9 published them and as a chart consumes
+    them. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is
+    premium-blind and is one subtraction away.
+    """
+
+    spot: list[Finite]
+    pnl_at_expiry: list[Finite]
+
+    @model_validator(mode="after")
+    def _same_length(self) -> "Curve":
+        """Parallel arrays that disagree do not raise on a chart - they draw, slightly
+        wrong, and nobody notices. So they cannot be built that way."""
+        if len(self.spot) != len(self.pnl_at_expiry):
+            raise ValueError("a curve needs one P&L for every Spot")
+        return self
+
+
+class AnalysisResponse(BaseModel):
+    """Everything about one Strategy, in one response.
+
+    Deliberately fat (#23). Splitting it would mean several round trips carrying the
+    same Legs and recomputing the same curve, and the trader would watch the numbers
+    arrive after the chart they belong to. #27 and #29 add the Greeks and the Payoff
+    Table to this same response rather than to endpoints of their own.
+    """
+
+    moment: str
+    spot: Finite
+    """The NIFTY level at the moment - what the header shows and the x-axis measures."""
+
+    curve: Curve
+    metrics: Metrics
