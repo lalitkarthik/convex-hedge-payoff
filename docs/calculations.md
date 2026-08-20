@@ -8,8 +8,10 @@ the notebook or the API, its derivation is here.
 | Symbol | Meaning |
 |---|---|
 | $S$ | spot — the index level now |
-| $S_T$ | terminal spot at expiry, the payoff x-axis |
-| $F$ | forward — the level options are priced off |
+| $S_T$ | terminal spot at expiry — the payoff x-axis in **spot** coordinates |
+| $\hat F$ | the forward **now**, fitted in §1 — the level options are priced off |
+| $F$ | the forward as a **payoff coordinate**, $F = S_T + b$ |
+| $b$ | basis, $b = \hat F - S$ |
 | $K$ | strike |
 | $D$ | discount factor to expiry, $D = e^{-rT}$ |
 | $r$ | continuously compounded rate implied by $D$ |
@@ -30,15 +32,15 @@ none.
 Put-call parity is an identity for European options on the same underlying, strike and
 expiry. No model, no volatility, no distributional assumption:
 
-$$C(K) - P(K) = D \, (F - K)$$
+$$C(K) - P(K) = D \, (\hat F - K)$$
 
-As a function of $K$ that is a straight line, $y = a + bK$, with
+As a function of $K$ that is a straight line, $y = a + mK$, with
 
-$$y = C(K) - P(K), \qquad a = DF, \qquad b = -D$$
+$$y = C(K) - P(K), \qquad a = D\hat F, \qquad m = -D$$
 
 So one ordinary least squares fit recovers both unknowns:
 
-$$D = -b \qquad F = \frac{a}{D} = -\frac{a}{b}$$
+$$D = -m \qquad \hat F = \frac{a}{D} = -\frac{a}{m}$$
 
 Only strikes quoting **both** a call and a put can enter — parity needs a pair. At the
 12:00 snapshot that is 9 of the 94 strikes touched during the day.
@@ -50,7 +52,7 @@ Graded against the `forward` and `discount` columns, solved independently upstre
 | | ours | source | difference |
 |---|---|---|---|
 | $D$ | 0.993480 | 0.993480 | $+0.000000$ |
-| $F$ | 25,219.12 | 25,219.12 | $+0.00$ |
+| $\hat F$ | 25,219.12 | 25,219.12 | $+0.00$ |
 
 $n = 9$, $R^2 = 0.99989$, $r = 15.61\%$. Asserted in the notebook, so CI fails if the
 formula drifts. Across the full session the same fit reproduces the source **exactly on
@@ -61,6 +63,27 @@ formula drifts. Across the full session the same fit reproduces the source **exa
 OLS returns a number whether the input deserves one or not. A fit is used only if
 
 $$n \ge 5 \qquad \text{and} \qquad 0 < r < 30\%, \qquad r = -\frac{\ln D}{T}$$
+
+### Rejecting $F = S/D$
+
+[#13](https://github.com/lalitkarthik/convex-hedge-payoff/issues/13) question 1 offers three
+rules for mapping a hypothetical spot to a forward. **One of them is excluded on this data:**
+
+```
+F = S / D          ->  25,264.98     observed 25,219.12     miss +45.86
+F = S + b          ->  25,219.12     exact by construction
+F = S x (F-hat/S)  ->  25,219.12     exact by construction
+```
+
+$S/D$ reinstates the full financing cost and none of the offsetting dividend income, because
+the fitted $D$ is a **pure discount**. The 45.86-point miss is a strike interval wide — larger
+than the basis it is trying to reproduce.
+
+The remaining two disagree by under 7 points across $\pm 6\%$ of spot. **Constant basis is
+adopted for charting** (§2), because it makes the transform a rigid translation and so lets the
+caps be asserted unchanged rather than merely observed to be close. This narrows #13 question 1
+from three candidates to two; it does not answer it, and a charting convention is not a pricing
+rule.
 
 ### Why 60 minutes fail it
 
@@ -76,7 +99,7 @@ Of the 376 minutes in the session:
 **The forward is robust; the discount is fragile.** They come from different features of
 the same line:
 
-- $F$ is where the line **crosses zero** — set $C - P = 0$ and parity gives $K = F$
+- $\hat F$ is where the line **crosses zero** — set $C - P = 0$ and parity gives $K = \hat F$
   directly. A zero-crossing inside the strike range is an interpolation, and noise barely
   moves it.
 - $D$ is the **slope**. Measuring a slope means measuring the line's tilt across the
@@ -110,20 +133,22 @@ Recorded so it is not rediscovered from scratch.
 
 ### A note on the moneyness filter
 
-A filter of $0.85 \le K/F \le 1.15$ is specified upstream. On this data it is **inert**:
-across the session $K/F$ on paired strikes spans only 0.9218 to 1.1024, so it drops 0 of
-4,585 pairs. It is also circular as written — $F$ is the unknown being solved for. Kept as
+A filter of $0.85 \le K/\hat F \le 1.15$ is specified upstream. On this data it is **inert**:
+across the session $K/\hat F$ on paired strikes spans only 0.9218 to 1.1024, so it drops 0 of
+4,585 pairs. It is also circular as written — $\hat F$ is the unknown being solved for. Kept as
 documentation of intent; the gate above does the work.
 
-### Where $F$ and $D$ are used
+### Where $\hat F$ and $D$ are used
 
-- $F$ selects the at-the-money strike — nearest the **forward**, not the spot. At the
+- $\hat F$ selects the at-the-money strike — nearest the **forward**, not the spot. At the
   snapshot they differ by 118.87 points and select different strikes, 25,200 against
   25,100.
-- $F$ and $S$ are both drawn on the payoff chart. The position never depends on which one
+- $\hat F$ and $S$ are both drawn on the payoff chart. The position never depends on which one
   you read.
 - $D$ is not consumed downstream yet. It falls out of the same fit for free and is needed
   the moment anything is priced before expiry.
+- $b = \hat F - S$ **is** consumed. It is the whole content of the forward-coordinate payoff
+  view in §2, and the only quantity by which the two payoff charts differ.
 
 ---
 
@@ -142,8 +167,29 @@ A strategy is the sum over its legs:
 
 $$\text{PnL}(S_T) = \sum_i \text{PnL}_i(S_T)$$
 
-Nothing here needs $F$, $D$, $T$ or volatility. The expiry payoff is arithmetic on strikes
+Nothing here needs $\hat F$, $D$, $T$ or volatility. The expiry payoff is arithmetic on strikes
 and entry prices, which is why it is the only line v1 draws.
+
+### The same payoff in forward coordinates
+
+A leg settles against **spot**, so the formulas above are unavoidably functions of $S_T$. To read
+the payoff against the forward instead, substitute $S_T = F - b$:
+
+$$\max(S_T - K,\;0) = \max\bigl(F - (K + b),\;0\bigr)
+\qquad
+\max(K - S_T,\;0) = \max\bigl((K + b) - F,\;0\bigr)$$
+
+So in forward coordinates **the effective strike is $K + b$**, and
+
+$$\Pi_F(F) = \Pi(F - b)$$
+
+The forward payoff is the spot payoff **translated right by $b$**. Nothing else happens to it.
+That is why constant basis was chosen over the constant-ratio rule, which scales instead and
+would stretch strike gaps unevenly.
+
+It is exact **only at expiry**, where the realised basis is zero — it uses today's basis for a
+payoff settled later. It is a way of reading the expiry line and must not be carried onto a
+target-date curve without revisiting [#8](https://github.com/lalitkarthik/convex-hedge-payoff/issues/8).
 
 ---
 
@@ -175,6 +221,32 @@ $$\text{max profit} = \text{credit} \qquad \text{max loss} = \text{credit} - (\t
 Asserted in the notebook for the iron fly and iron condor — a check on the metrics function
 that does not depend on it.
 
+### In forward coordinates
+
+$\Pi_F(F) = \Pi(F - b)$ is a translation, so:
+
+1. **Max profit, max loss and net premium are identical** in both coordinate systems. A
+   horizontal shift moves no $y$-value, and premiums are prices paid — they have no axis at all.
+2. **Every breakeven shifts by exactly $+b$.**
+3. **The left tail terminates at $F = b$, not $F = 0$**, because $S_T \ge 0$ maps to $F \ge b$.
+
+The third is a trap. The candidate set becomes
+
+$$\mathcal{K}_F = \{b\} \cup \{K_i + b\}$$
+
+Reusing $0$ evaluates the payoff at $S_T = -b$, a negative index. Measured on the naked long put
+at the 12:00 snapshot, ATM 25,200, $L = 65$:
+
+```
+correct   max profit at F = b = 118.87   ->  1,616,764.50
+naive     max profit at F = 0            ->  1,624,490.77     wrong by +7,726.27
+```
+
+It does not raise, does not produce `NaN`, and is 0.48% high — it would survive review. The
+mitigation is structural: **compute the metrics once in spot coordinates, where the floor is
+unambiguously zero, then translate the $x$-quantities.** No second candidate set then exists to
+get wrong.
+
 ---
 
 ## 4. Greeks
@@ -187,5 +259,7 @@ Two questions block the derivation, and neither is settled:
 - Spot-to-forward conversion — pricing at a hypothetical spot needs a rule mapping
   $S \to F$, and the data cannot referee it.
   [#13](https://github.com/lalitkarthik/convex-hedge-payoff/issues/13)
+  The constant-basis convention adopted in §2 is a **charting** choice for the expiry line, and
+  is not an answer to this — a settled chart axis is not a settled pricing rule.
 - Volatility on a target date — whether implied vol is held constant.
   [#8](https://github.com/lalitkarthik/convex-hedge-payoff/issues/8)
