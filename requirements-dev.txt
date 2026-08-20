@@ -13,3 +13,7 @@ ruff>=0.6
 # Notebook execution in CI (.github/workflows/notebook.yml)
 nbconvert>=7.0
 ipykernel>=6.0
+
+# FastAPI's TestClient speaks to the app in-process over httpx - no server, no port,
+# and the assertions stay at the HTTP boundary (#23's primary seam).
+httpx>=0.27
