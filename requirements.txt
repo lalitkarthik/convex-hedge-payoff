@@ -6,3 +6,8 @@ numpy>=1.26
 pandas>=2.1
 pyarrow>=14.0
 scipy>=1.11
+
+# engine
+# The shared types are pydantic models: the seam validates at the boundary
+# rather than trusting a caller, so the ban on NaN is enforced by the type.
+pydantic>=2.7
