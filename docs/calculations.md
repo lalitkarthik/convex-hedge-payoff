@@ -19,6 +19,11 @@ the notebook or the API, its derivation is here.
 | $C, P$ | call and put price at strike $K$ |
 | $d_i, q_i, p_i$ | direction ($\pm 1$), quantity and entry price of leg $i$ |
 | $L$ | lot size, 65 for NIFTY |
+| $\sigma$ | implied volatility, a decimal — never a percentage |
+| $N(\cdot), n(\cdot)$ | standard normal CDF and density |
+| $d_1, d_2$ | the Black-76 arguments, defined in §4 |
+| $\Delta, \Gamma, \nu, \Theta$ | delta, gamma, vega and theta of a single contract |
+| $g_i$ | any one Greek of leg $i$ |
 
 `dte_days` is a trading-day clock: one session consumes exactly 1.0, weekends and holidays
 none.
@@ -379,16 +384,171 @@ costs more than equivalent upside.
 
 ## 5. Greeks
 
-**Not derived yet.** The Black-76 core in `src/payoff/pricing.py` is graded against the source
-greeks in CI, and §4 now calls it to invert for implied volatility — but no Greek is computed
-for a position anywhere in the payoff view.
+Delta, gamma, vega and theta, per contract and per structure, priced from the same Black-76 the
+rest of this file uses.
 
-Two questions block the derivation, and neither is settled:
+What makes this section cheap is that nothing has to be assumed. The Greeks are priced at the
+**observed** moment — $\hat F$ and $D$ from §1's parity fit, $\sigma$ from §4's Newton solve — so
+there is no hypothetical spot to convert and no volatility to roll forward. That framing is
+[#27](https://github.com/lalitkarthik/convex-hedge-payoff/issues/27)'s, and it is why this
+section depends on neither #13 nor #8. Both stay open; see *What is still open* below.
+
+### One contract
+
+$d_1$ and $d_2$ are §4's, unchanged. Then
+
+$$\Delta = N(d_1) \quad \text{(call)}, \qquad \Delta = N(d_1) - 1 \quad \text{(put)}$$
+
+$$\Gamma = \frac{n(d_1)}{\hat F \, \sigma \sqrt{T}}, \qquad
+  \nu = \frac{D \, \hat F \, n(d_1) \sqrt{T}}{100}$$
+
+$$\Theta = V\!\left(T - \tfrac{1}{252},\; D_{\text{next}}\right) - V(T, D),
+  \qquad D_{\text{next}} = e^{-r\left(T - \frac{1}{252}\right)}, \quad r = -\frac{\ln D}{T}$$
+
+$\Gamma$ and $\nu$ depend on the strike only through $d_1$, which a call and a put at one strike
+share, so **they are identical for the two**. Only $\Delta$ knows which side it is on, and the
+two differ by exactly 1 — which is put-call parity, and is asserted in the notebook.
+
+The rate is reconstructed from $D$ only to roll the discount one session. Per **ADR-0001** it is
+never an input and never leaves the function: the implied continuous rate runs from 0.9% to 28.4%
+across the dataset and diverges as $T \to 0$.
+
+### The conventions
+
+Several are not textbook. They are the source's, they are what `src/payoff/pricing.py` is graded
+against in CI, and they are inherited unchanged rather than converted for readability:
+
+| | |
+|---|---|
+| $\Delta$, $\Gamma$ | **undiscounted** — the true $\partial V / \partial \hat F$ is $D\,N(d_1)$; the $D$ is dropped |
+| $\nu$ | **discounted**, and divided by 100 — per volatility *point*, a 1% move |
+| $\Theta$ | **a one-trading-day repricing**, not $\partial V / \partial t$ |
+
+The mixture is deliberate: $\nu$ carries the discount factor and $\Delta$ does not. It is written
+down because the first reader to notice will assume it is a bug. A convention that reads oddly is
+a labelling problem, not a maths problem.
+
+### Rejecting the analytic $\Theta$
+
+The obvious form is the derivative, divided down to one session:
+
+$$\Theta_{\text{analytic}} = \frac{1}{252}\left(-\frac{D \, \hat F \, n(d_1) \, \sigma}{2\sqrt{T}}
+  \;+\; r\,V\right)$$
+
+Measured against the source at the 12:00 snapshot, over all 55 gradeable legs:
+
+```
+                      analytic     source        miss
+
+25,200 PE             -15.7064   -16.1119     +0.4055     at the money, 2.52%
+25,200 CE             -15.6946   -16.1002     +0.4055
+26,050 CE              -9.3031    -9.2985     -0.0047     far wing
+
+one-session repricing                       4.1e-10
+```
+
+The miss is largest at the money, shrinks into the wings and keeps the same sign throughout. That
+is what makes it dangerous rather than merely wrong: there is no outlier, no `NaN` and no
+exception — a Greeks table built on it would understate the decay of every near-the-money
+position by a couple of percent, all day. It is the failure mode ADR-0001 exists to catch, so the
+notebook computes the analytic form and **asserts that it disagrees**.
+
+$\Theta$ here is what the position is worth after one session has passed and nothing else has
+moved, which is also the number a trader reads it as.
+
+### A structure
+
+$$G \;=\; L \sum_{i=1}^{n} d_i \, q_i \, g_i$$
+
+The same sum as §2's payoff, $\Pi = L \sum_i d_i q_i (V_i - p_i)$, over a different quantity.
+Every Greek is **extensive** — it scales with position size and adds across legs — so the total
+is a plain weighted sum with no special cases, and a short leg reports the negated Greek of the
+equivalent long leg because $d_i = -1$ is the only difference between them.
+
+One consequence is the argument for a per-leg breakdown existing at all. The iron condor's net
+delta is $-1.15$, near enough to flat that the payoff chart says nothing about it, while its
+individual legs carry $-24.24$ and $+22.75$. The risk is real and it cancels; a total alone shows
+only the second fact.
+
+### Verification
+
+Graded at the 12:00 snapshot, all asserted in the notebook:
+
+| check | result |
+|---|---|
+| against `black76_greeks` | max difference $< 10^{-12}$, every leg of all 13 structures |
+| against the source, 55 legs — $\Delta$ | $3.5 \times 10^{-12}$ |
+| $\Gamma$ | $5.9 \times 10^{-15}$ |
+| $\nu$ | $3.9 \times 10^{-10}$ |
+| $\Theta$ | $4.1 \times 10^{-10}$ |
+
+Note what is **not** fed in. $\hat F$ and $D$ come from §1's fit and $\sigma$ from §4's solve, so
+a wrong step anywhere in §§1–4 would surface here. The source's Greek columns appear only on the
+right-hand side of a subtraction — it is a test oracle, never an input.
+
+#### The synthetic forward
+
+One check grades something no row-by-row comparison can. Long the 25,200 call and short the
+25,200 put is a forward outright by put-call parity, so all four exposures follow in closed form
+from no Greek formula at all:
+
+```
+delta   +1.0000000000   exactly     N(d1) - (N(d1) - 1)
+gamma    0                          identical for the two legs, cancels
+vega     0                          identical for the two legs, cancels
+theta   +0.01176764                 = 19.002881 - 18.991113
+                                    = (D_next - D)(F_hat - K)
+```
+
+That $\Theta$ is **pure re-discounting**: the position holds $\hat F - K = 19.12$ points of
+intrinsic value, one day nearer, at $r = 15.61\%$. It contains no volatility term. The check
+passes only if $\Delta$, $\Gamma$, $\nu$ and the discount roll are simultaneously right, so a
+model that is merely self-consistent does not survive it.
+
+### Exposure across the forward
+
+The notebook sweeps $\hat F$ across §3's window and re-prices, at `dte_days` of 10.56, 5.00, 2.00
+and 0.50, so exposure can be read as a shape and its evolution toward expiry on one pair of axes.
+Two things are held fixed, and both are assumptions:
+
+- **$\sigma$ is sticky per strike.** Each strike keeps the volatility §4 solved for it; moving the
+  forward does not re-solve the smile.
+- **$r$ is held at the fitted 15.61%**, so $D(T) = e^{-rT}$ — the same roll $\Theta$ uses one
+  session at a time, which makes the curves and the $\Theta$ figures agree by construction.
+
+The family stops at half a day, not zero. The Greeks are undefined at expiry and the core raises
+there rather than returning a `NaN`: $\Gamma$ divides by a time-scaling that is zero, and $\Theta$
+is the change over a session that no longer exists. The *price* at $T = 0$ is well defined — it is
+the expiry line §2 derives — and this is exactly where the payoff and the exposure part company.
+
+Two readings, both measured:
+
+| | Long Straddle at $\hat F$ | | | Iron Condor at $\hat F$ | |
+|---|---|---|---|---|---|
+| `dte_days` | $\Gamma$ | $\nu$ | $\Theta$ | $\Gamma$ | $\Theta$ |
+| 10.56 | 0.06108 | 2,657.9 | −2,093.78 | −0.01027 | +304.73 |
+| 5.00 | 0.08875 | 1,834.8 | −3,166.44 | −0.02560 | +909.27 |
+| 2.00 | 0.14022 | 1,161.7 | −5,580.27 | −0.06286 | +2,517.22 |
+| 0.50 | 0.27932 | 579.1 | −8,376.38 | −0.07375 | +518.59 |
+
+The straddle's $\Gamma$ multiplies by 4.57 while its $\nu$ falls to 22% of where it started: the
+same position, bought as an opinion about $\sigma$, becomes an opinion about where the index
+closes. And the condor's $\Theta$ is **not monotone** — it peaks near two days and collapses into
+the final session, because a structure sitting between its short strikes has already converged on
+its maximum profit and has nothing left to decay.
+
+### What is still open
+
+Both questions below remain unsettled. What changed is their **scope**: neither blocks Greeks at
+the observed moment, and neither blocks the forward-swept charts.
 
 - Spot-to-forward conversion — pricing at a hypothetical spot needs a rule mapping
   $S \to F$, and the data cannot referee it.
   [#13](https://github.com/lalitkarthik/convex-hedge-payoff/issues/13)
-  The constant-basis convention adopted in §2 is a **charting** choice for the expiry line, and
-  is not an answer to this — a settled chart axis is not a settled pricing rule.
+  This section never converts one: its x-axis is $\hat F$ itself. The constant-basis convention
+  adopted in §2 is a **charting** choice for the expiry line, and is not an answer to this — a
+  settled chart axis is not a settled pricing rule.
 - Volatility on a target date — whether implied vol is held constant.
   [#8](https://github.com/lalitkarthik/convex-hedge-payoff/issues/8)
+  The DTE family above is an *exposure diagnostic* under a named sticky-strike assumption, not a
+  P&L curve valued on a future date. Adopting it is not adopting an answer to this.
