@@ -249,10 +249,139 @@ get wrong.
 
 ---
 
-## 4. Greeks
+## 4. Implied volatility
 
-**Not derived yet.** A Black-76 core exists in `src/payoff/pricing.py` and is graded against
-the source greeks in CI, but nothing in the payoff view consumes it.
+Everything above is arithmetic. This needs a **model**, and it has no closed form.
+
+Black-76 maps a volatility to a price and is strictly increasing in $\sigma$ — more volatility is
+always worth more — so the map is invertible, but only numerically:
+
+$$\text{price} = \text{Black76}(\hat F, K, T, \sigma, D) \qquad \Longrightarrow \qquad \sigma = \;?$$
+
+Implied volatility is the $\sigma$ that reproduces the quoted price. It is not a forecast. It is
+the price restated in units that compare across strikes.
+
+### Newton-Raphson
+
+Drive the residual to zero:
+
+$$f(\sigma) = \text{Black76}(\hat F, K, T, \sigma, D) - \text{market}$$
+
+The derivative is a Greek we already have — **vega**:
+
+$$f'(\sigma) = D\,\hat F\,\phi(d_1)\sqrt{T}, \qquad
+d_1 = \frac{\ln(\hat F/K) + \tfrac{1}{2}\sigma^2 T}{\sigma\sqrt{T}}$$
+
+$$\sigma_{n+1} = \sigma_n - \frac{f(\sigma_n)}{f'(\sigma_n)}$$
+
+**The vega must be raw.** `black76_greeks` returns vega divided by 100, because the Oracle quotes
+it per volatility *point*. Feeding that to Newton makes every step 100 times too small: the
+solver still converges, just far too slowly, so it presents as sluggishness rather than as a bug.
+
+### Which quote to invert
+
+One volatility per strike, from the **out-of-the-money** leg: the call when $K \ge \hat F$, the
+put when $K < \hat F$.
+
+Forced, not chosen. The Oracle's `iv` is identical for the call and the put at every paired
+strike — it solves the OTM leg and copies the answer to the in-the-money twin, whose last print
+is stale. Inverting the ITM quote disagrees with the Oracle by construction. See
+`Data/sample/README.md`.
+
+### Convergence
+
+Newton replaces the curve by its tangent and jumps to where the tangent crosses zero. Near the
+root the error **squares** every step — the correct digits double. Traced on the 25,500 call,
+seeded at 0.20:
+
+```
+step        sigma          error    price residual
+   0   0.20000000       4.11e-02          8.07e+01
+   1   0.15930075       3.84e-04          7.46e-01
+   2   0.15891634       5.35e-08          1.04e-04
+   3   0.15891629       5.00e-16          1.17e-12
+```
+
+Four correct digits, then eight, then full double precision. That is why a tolerance of $10^{-8}$
+costs 4 iterations rather than 40.
+
+**That behaviour is local.** It holds once the guess is near the root and says nothing about a
+guess that is not. Price against $\sigma$ is S-shaped: as $\sigma \to 0$ the price flattens onto
+intrinsic and vega decays super-exponentially, because $\phi(d_1)$ carries $e^{-d_1^2/2}$ while
+$d_1$ itself grows like $1/\sigma$. On that flat shelf the tangent is horizontal and the step
+$f/f'$ diverges.
+
+### The seed decides whether it works at all
+
+The textbook seed is Brenner-Subrahmanyam,
+$\sigma_0 \approx \sqrt{2\pi/T}\;\text{price}/(D\hat F)$, derived at the money. Off the money it
+is badly wrong, and the vega it lands on is not merely small:
+
+```
+23,500 PE   market 23.75   true iv 21.36%
+
+              sigma        d1      phi(d1)        vega
+BS seed      0.0116    29.715    7.41e-193    3.80e-189
+flat 0.20    0.2000     1.745     8.70e-02     4.46e+02
+true iv      0.2136     1.636     1.05e-01     5.36e+02
+```
+
+The seed is 18 times too low, and vega there is **191 orders of magnitude** below its value at
+the answer. No step size recovers from that; the solver aborts on the $10^{-12}$ guard.
+
+Measured across all 46 legs of the slice:
+
+| seed | converged | median iterations |
+|---|---|---|
+| Brenner-Subrahmanyam | **22 / 46** | 5 |
+| $\max(\text{BS},\,\sqrt{2\lvert \ln(\hat F/K)\rvert / T})$ | 46 / 46 | 6 |
+| flat $\sigma_0 = 0.20$ | **46 / 46** | **4** |
+
+A flat 20% wins on both counts. The chain quotes 15.7% to 21.4%, so a constant is never far from
+any root, and the cleverer seeds buy nothing. **The naive seed beats the derived one here**, and
+the reason is specific rather than general: one expiry, a narrow volatility range, and a known
+market.
+
+### Verification
+
+Graded three ways at the 12:00 snapshot, 46 legs, all asserted in the notebook:
+
+| check | result |
+|---|---|
+| against the Oracle `iv` | max difference $7.92 \times 10^{-12}$ |
+| round-trip repricing | max difference $3.70 \times 10^{-9}$ |
+| iteration ceiling | max 5, median 4 |
+
+The iteration ceiling is a real check, not decoration — it is what catches the divided-by-100
+vega, which produces correct answers slowly rather than wrong answers loudly.
+
+### What the slice shows
+
+Volatility against moneyness $K/\hat F$ at one minute — a two-dimensional cut, since one expiry
+gives no second axis. Two distinct features, routinely conflated:
+
+**Smile.** Both wings sit above the middle. The minimum is 15.74% at $K/\hat F = 1.033$; the far
+put reaches 21.36% and the far call 21.11%. Away from the money in either direction the market
+charges more than one flat volatility, because real tails are fatter than lognormal.
+
+**Skew.** The wings are not level with each other:
+
+| distance from $\hat F$ | put | call | put $-$ call |
+|---|---|---|---|
+| 3% | 18.20% | 15.82% | +2.38 |
+| 5% | 19.61% | 16.60% | +3.01 |
+| 7% | 21.36% | 17.87% | +3.49 |
+
+The put side is dearer at every distance and the gap widens further out — downside protection
+costs more than equivalent upside.
+
+---
+
+## 5. Greeks
+
+**Not derived yet.** The Black-76 core in `src/payoff/pricing.py` is graded against the source
+greeks in CI, and §4 now calls it to invert for implied volatility — but no Greek is computed
+for a position anywhere in the payoff view.
 
 Two questions block the derivation, and neither is settled:
 
