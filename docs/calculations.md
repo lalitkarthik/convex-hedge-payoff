@@ -387,6 +387,11 @@ costs more than equivalent upside.
 Delta, gamma, vega and theta, per contract and per structure, priced from the same Black-76 the
 rest of this file uses.
 
+Every Greek here is **per contract, never per lot** — the unit the source's Greek columns are
+in, so the grading below compares like with like instead of carrying a factor of 65. It is
+deliberately the opposite convention to §2's payoff, which is a rupee amount for a position and
+so carries $L$. Multiply by $L = 65$ for one lot's exposure.
+
 What makes this section cheap is that nothing has to be assumed. The Greeks are priced at the
 **observed** moment — $\hat F$ and $D$ from §1's parity fit, $\sigma$ from §4's Newton solve — so
 there is no hypothetical spot to convert and no volatility to roll forward. That framing is
@@ -458,16 +463,17 @@ moved, which is also the number a trader reads it as.
 
 ### A structure
 
-$$G \;=\; L \sum_{i=1}^{n} d_i \, q_i \, g_i$$
+$$G \;=\; \sum_{i=1}^{n} d_i \, q_i \, g_i$$
 
-The same sum as §2's payoff, $\Pi = L \sum_i d_i q_i (V_i - p_i)$, over a different quantity.
+The same sum as §2's payoff, $\Pi = L \sum_i d_i q_i (V_i - p_i)$, over a different quantity —
+and without the $L$, which is the one place the two identities part company.
 Every Greek is **extensive** — it scales with position size and adds across legs — so the total
 is a plain weighted sum with no special cases, and a short leg reports the negated Greek of the
 equivalent long leg because $d_i = -1$ is the only difference between them.
 
 One consequence is the argument for a per-leg breakdown existing at all. The iron condor's net
-delta is $-1.15$, near enough to flat that the payoff chart says nothing about it, while its
-individual legs carry $-24.24$ and $+22.75$. The risk is real and it cancels; a total alone shows
+delta is $-0.0178$, near enough to flat that the payoff chart says nothing about it, while its
+individual legs carry $-0.3729$ and $+0.3500$ — twenty times the total, in both directions. The risk is real and it cancels; a total alone shows
 only the second fact.
 
 ### Verification
@@ -526,10 +532,10 @@ Two readings, both measured:
 | | Long Straddle at $\hat F$ | | | Iron Condor at $\hat F$ | |
 |---|---|---|---|---|---|
 | `dte_days` | $\Gamma$ | $\nu$ | $\Theta$ | $\Gamma$ | $\Theta$ |
-| 10.56 | 0.06108 | 2,657.9 | −2,093.78 | −0.01027 | +304.73 |
-| 5.00 | 0.08875 | 1,834.8 | −3,166.44 | −0.02560 | +909.27 |
-| 2.00 | 0.14022 | 1,161.7 | −5,580.27 | −0.06286 | +2,517.22 |
-| 0.50 | 0.27932 | 579.1 | −8,376.38 | −0.07375 | +518.59 |
+| 10.56 | 0.0009397 | 40.891 | −32.2121 | −0.0001580 | +4.6882 |
+| 5.00 | 0.0013654 | 28.228 | −48.7144 | −0.0003939 | +13.9887 |
+| 2.00 | 0.0021573 | 17.873 | −85.8503 | −0.0009671 | +38.7264 |
+| 0.50 | 0.0042973 | 8.909 | −128.8674 | −0.0011347 | +7.9783 |
 
 The straddle's $\Gamma$ multiplies by 4.57 while its $\nu$ falls to 22% of where it started: the
 same position, bought as an opinion about $\sigma$, becomes an opinion about where the index
