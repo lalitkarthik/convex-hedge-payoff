@@ -384,13 +384,13 @@ costs more than equivalent upside.
 
 ## 5. Greeks
 
-Delta, gamma, vega and theta, per contract and per structure, priced from the same Black-76 the
-rest of this file uses.
+Delta, gamma, vega and theta, per contract and per structure, as **partial derivatives of the
+Black-76 price** — discount factor included, which is what makes them consistent with the price
+formula §2 and §4 already use.
 
-Every Greek here is **per contract, never per lot** — the unit the source's Greek columns are
-in, so the grading below compares like with like instead of carrying a factor of 65. It is
-deliberately the opposite convention to §2's payoff, which is a rupee amount for a position and
-so carries $L$. Multiply by $L = 65$ for one lot's exposure.
+Every Greek here is **per contract, never per lot** — multiply by $L = 65$ for one lot's
+exposure. §2's payoff carries $L$ because it is a rupee amount for a position; a Greek is a
+property of the contract.
 
 What makes this section cheap is that nothing has to be assumed. The Greeks are priced at the
 **observed** moment — $\hat F$ and $D$ from §1's parity fit, $\sigma$ from §4's Newton solve — so
@@ -400,97 +400,138 @@ section depends on neither #13 nor #8. Both stay open; see *What is still open* 
 
 ### One contract
 
-$d_1$ and $d_2$ are §4's, unchanged. Then
+$d_1$ and $d_2$ are §4's, unchanged. The price is $V = D\bigl[\hat F N(d_1) - K N(d_2)\bigr]$ for
+a call, so every derivative of it inherits the $D$:
 
-$$\Delta = N(d_1) \quad \text{(call)}, \qquad \Delta = N(d_1) - 1 \quad \text{(put)}$$
+$$\Delta = D\,N(d_1) \quad \text{(call)}, \qquad \Delta = D\bigl(N(d_1) - 1\bigr) \quad \text{(put)}$$
 
-$$\Gamma = \frac{n(d_1)}{\hat F \, \sigma \sqrt{T}}, \qquad
+$$\Gamma = \frac{D \, n(d_1)}{\hat F \, \sigma \sqrt{T}}, \qquad
   \nu = \frac{D \, \hat F \, n(d_1) \sqrt{T}}{100}$$
 
-$$\Theta = V\!\left(T - \tfrac{1}{252},\; D_{\text{next}}\right) - V(T, D),
-  \qquad D_{\text{next}} = e^{-r\left(T - \frac{1}{252}\right)}, \quad r = -\frac{\ln D}{T}$$
+$$\Theta = \frac{1}{252}\left(-\frac{D \, \hat F \, n(d_1) \, \sigma}{2\sqrt{T}} \;+\; r\,V\right),
+  \qquad r = -\frac{\ln D}{T}$$
 
 $\Gamma$ and $\nu$ depend on the strike only through $d_1$, which a call and a put at one strike
-share, so **they are identical for the two**. Only $\Delta$ knows which side it is on, and the
-two differ by exactly 1 — which is put-call parity, and is asserted in the notebook.
+share, so **they are identical for the two**. Only $\Delta$ knows which side it is on, and the two
+differ by exactly $D$ — put-call parity differentiated, since
+$\partial\bigl[D(\hat F - K)\bigr] / \partial \hat F = D$. An undiscounted convention reports 1
+there; this one reports 0.9934799840 at the 12:00 snapshot, and the notebook asserts it.
 
-The rate is reconstructed from $D$ only to roll the discount one session. Per **ADR-0001** it is
-never an input and never leaves the function: the implied continuous rate runs from 0.9% to 28.4%
-across the dataset and diverges as $T \to 0$.
+$\Theta$'s two terms pull opposite ways. The first is the loss of optionality and grows without
+bound as $T \to 0$, because of the $1/\sqrt{T}$. The second is the gain from discounting one day
+less, positive for anything with value, and it dominates once the first has decayed — deep in the
+money the sum can therefore be **positive**.
 
-### The conventions
+The rate is reconstructed from $D$ only to price the carry term. Per **ADR-0001** it is never an
+input and never leaves the function: the implied continuous rate runs from 0.9% to 28.4% across
+the dataset and diverges as $T \to 0$.
 
-Several are not textbook. They are the source's, they are what `src/payoff/pricing.py` is graded
-against in CI, and they are inherited unchanged rather than converted for readability:
+### The conventions, and where the benchmark's differ
 
-| | |
-|---|---|
-| $\Delta$, $\Gamma$ | **undiscounted** — the true $\partial V / \partial \hat F$ is $D\,N(d_1)$; the $D$ is dropped |
-| $\nu$ | **discounted**, and divided by 100 — per volatility *point*, a 1% move |
-| $\Theta$ | **a one-trading-day repricing**, not $\partial V / \partial t$ |
+The four above are the textbook Black-76 partials. `Data/greeks.parquet` ships a different set of
+conventions, and two of the four therefore disagree **by construction**:
 
-The mixture is deliberate: $\nu$ carries the discount factor and $\Delta$ does not. It is written
-down because the first reader to notice will assume it is a bug. A convention that reads oddly is
-a labelling problem, not a maths problem.
+| | here | `Data/greeks.parquet` | the gap |
+|---|---|---|---|
+| $\Delta$ | $D\,N(d_1)$ | $N(d_1)$ | a factor of $D$ |
+| $\Gamma$ | $D\,n(d_1)/(\hat F \sigma\sqrt{T})$ | undiscounted | a factor of $D$ |
+| $\nu$ | $D\,\hat F\,n(d_1)\sqrt{T}/100$ | the same | none |
+| $\Theta$ | $\partial V/\partial t$, per session | a one-session **repricing** | a different quantity |
 
-### Rejecting the analytic $\Theta$
+The first two are a **scaling and nothing more**. $\partial V/\partial \hat F$ really is
+$D\,N(d_1)$: the premium is paid today and the payoff arrives at expiry, so a point of forward is
+worth a discounted point now. Dropping the $D$ is the market convention the benchmark ships.
 
-The obvious form is the derivative, divided down to one session:
+$\Theta$ is not a scaling, and it is where the change costs something. $\partial V/\partial t$
+and "what the contract is worth after one session" are different quantities: they agree closely
+while there is time left and diverge as $T \to 0$, because the derivative carries a $1/\sqrt{T}$
+that the difference quotient does not. Both are measured below.
 
-$$\Theta_{\text{analytic}} = \frac{1}{252}\left(-\frac{D \, \hat F \, n(d_1) \, \sigma}{2\sqrt{T}}
-  \;+\; r\,V\right)$$
+$\nu$ keeps the $/100$ and $\Theta$ the $/252$. Those are **units** — per volatility point, per
+trading session — not model choices.
 
-Measured against the source at the 12:00 snapshot, over all 55 gradeable legs:
+### Verification, and the error against the benchmark
+
+Until this section priced the benchmark's conventions, agreement to $10^{-10}$ was the pass
+condition. It now prices the Black-76 partials, so the useful question is whether the two differ
+by **exactly** what the convention predicts, or by something else. An unexplained residual on
+$\Delta$ would be a real error; a residual of exactly $1 - D$ is a relabelling.
+
+At the 12:00 snapshot, 55 gradeable legs, with $\hat F$ and $D$ from §1's fit and $\sigma$ from
+§4's solve — nothing pre-solved fed in:
+
+| greek | worst abs error | worst rel error | explained by | residual |
+|---|---|---|---|---|
+| $\Delta$ | $5.1441 \times 10^{-3}$ | 0.6520% | $\times\,D$ | $3.5 \times 10^{-12}$ |
+| $\Gamma$ | $3.0982 \times 10^{-6}$ | 0.6520% | $\times\,D$ | $5.9 \times 10^{-15}$ |
+| $\nu$ | $3.8915 \times 10^{-10}$ | 0.0000% | nothing | $3.9 \times 10^{-10}$ |
+| $\Theta$ | $0.4055$ | 12.2674% | — | $0.4055$ |
+
+Fifty-five legs at one instant cannot distinguish "right" from "right here", so the same grade
+runs over the whole of `Data/greeks.parquet` — **517,672 rows, 8,356 timestamps, 0.0027 to 24.00
+days to expiry**. Every row ships the forward, the discount and the volatility that produced its
+own Greeks, so the core is fed exactly what it wants and a gap is mathematics rather than
+plumbing; `tests/test_oracle.py` takes the same line. The Greek columns stay on the right-hand
+side of the subtraction — a test oracle, never an input.
+
+| greek | worst abs | mean abs | median rel | residual vs $D \times$ source |
+|---|---|---|---|---|
+| $\Delta$ | $1.3765 \times 10^{-2}$ | $9.0970 \times 10^{-4}$ | 0.270% | $2.2 \times 10^{-16}$ |
+| $\Gamma$ | $9.0503 \times 10^{-6}$ | $1.0718 \times 10^{-6}$ | 0.270% | $2.1 \times 10^{-17}$ |
+| $\nu$ | $1.7764 \times 10^{-14}$ | $3.5887 \times 10^{-16}$ | 0.000% | $1.8 \times 10^{-14}$ |
+| $\Theta$ | $90.638$ | $1.2642$ | 5.272% | — |
+
+$\Delta$ and $\Gamma$ are the benchmark's numbers multiplied by the discount factor, on **every
+one of the 517,672 rows**, to $10^{-12}$. $\nu$ was already the Black-76 derivative and does not
+move at all. $D$ runs from 0.982269 to 1.000000 across the file, so the gap the convention opens
+on $\Delta$ is up to **1.77%** of the figure and nothing is left over once it is undone.
+
+#### The $\Theta$ gap, by expiry bucket
+
+$\Theta$ is the one that genuinely disagrees, and a single worst-case figure would hide the shape:
+
+| `dte_days` | rows | worst abs | median abs | median rel |
+|---|---|---|---|---|
+| [0, 0.5) | 13,596 | 90.638 | 8.2846 | 1280.85% |
+| [0.5, 1) | 20,213 | 21.681 | 5.2371 | 399.69% |
+| [1, 2) | 46,187 | 31.247 | 3.2787 | 115.27% |
+| [2, 5) | 140,666 | 4.436 | 0.8916 | 20.65% |
+| [5, 24] | 297,010 | 1.088 | 0.2452 | 2.42% |
+
+The worst row is a 26,050 CE with 0.0027 days left: the derivative says $-90.6875$ and the
+benchmark says $-0.0500$. The benchmark's repricing form **cannot** produce the first number,
+because a contract cannot lose more in a day than it is worth; the derivative has no such bound.
+Beyond five days the two agree to a median 2.42%, which is the region every structure in
+`notebooks/01_payoff_structures.ipynb` is priced in.
+
+At the snapshot itself, the two forms side by side:
 
 ```
-                      analytic     source        miss
+   strike type    black-76   repricing   benchmark      our miss
 
-25,200 PE             -15.7064   -16.1119     +0.4055     at the money, 2.52%
-25,200 CE             -15.6946   -16.1002     +0.4055
-26,050 CE              -9.3031    -9.2985     -0.0047     far wing
+   25,200   PE    -15.7064    -16.1119    -16.1119       +0.4055    at the money, 2.52%
+   25,200   CE    -15.6946    -16.1002    -16.1002       +0.4055
+   26,050   CE     -9.3031     -9.2985     -9.2985       -0.0047    far wing
 
-one-session repricing                       4.1e-10
+   repricing against the benchmark                       4.1e-10
 ```
 
-The miss is largest at the money, shrinks into the wings and keeps the same sign throughout. That
-is what makes it dangerous rather than merely wrong: there is no outlier, no `NaN` and no
-exception — a Greeks table built on it would understate the decay of every near-the-money
-position by a couple of percent, all day. It is the failure mode ADR-0001 exists to catch, so the
-notebook computes the analytic form and **asserts that it disagrees**.
-
-$\Theta$ here is what the position is worth after one session has passed and nothing else has
-moved, which is also the number a trader reads it as.
+That last line identifies the benchmark's convention exactly rather than by inference, and the
+notebook asserts it: if it ever stops holding, the file changed convention and this section needs
+re-reading.
 
 ### A structure
 
 $$G \;=\; \sum_{i=1}^{n} d_i \, q_i \, g_i$$
 
 The same sum as §2's payoff, $\Pi = L \sum_i d_i q_i (V_i - p_i)$, over a different quantity —
-and without the $L$, which is the one place the two identities part company.
-Every Greek is **extensive** — it scales with position size and adds across legs — so the total
-is a plain weighted sum with no special cases, and a short leg reports the negated Greek of the
-equivalent long leg because $d_i = -1$ is the only difference between them.
+and without the $L$, which is the one place the two identities part company. Every Greek is
+**extensive**, so the total is a plain weighted sum with no special cases, and a short leg reports
+the negated Greek of the equivalent long leg because $d_i = -1$ is the only difference.
 
 One consequence is the argument for a per-leg breakdown existing at all. The iron condor's net
-delta is $-0.0178$, near enough to flat that the payoff chart says nothing about it, while its
-individual legs carry $-0.3729$ and $+0.3500$ — twenty times the total, in both directions. The risk is real and it cancels; a total alone shows
-only the second fact.
-
-### Verification
-
-Graded at the 12:00 snapshot, all asserted in the notebook:
-
-| check | result |
-|---|---|
-| against `black76_greeks` | max difference $< 10^{-12}$, every leg of all 13 structures |
-| against the source, 55 legs — $\Delta$ | $3.5 \times 10^{-12}$ |
-| $\Gamma$ | $5.9 \times 10^{-15}$ |
-| $\nu$ | $3.9 \times 10^{-10}$ |
-| $\Theta$ | $4.1 \times 10^{-10}$ |
-
-Note what is **not** fed in. $\hat F$ and $D$ come from §1's fit and $\sigma$ from §4's solve, so
-a wrong step anywhere in §§1–4 would surface here. The source's Greek columns appear only on the
-right-hand side of a subtraction — it is a test oracle, never an input.
+delta is $-0.0177$, near enough to flat that the payoff chart says nothing about it, while its
+individual legs carry $-0.3705$ and $+0.3477$ — twenty times the total, in both directions.
 
 #### The synthetic forward
 
@@ -499,17 +540,19 @@ One check grades something no row-by-row comparison can. Long the 25,200 call an
 from no Greek formula at all:
 
 ```
-delta   +1.0000000000   exactly     N(d1) - (N(d1) - 1)
-gamma    0                          identical for the two legs, cancels
-vega     0                          identical for the two legs, cancels
-theta   +0.01176764                 = 19.002881 - 18.991113
-                                    = (D_next - D)(F_hat - K)
+delta    0.99347998   = D               D N(d1) - D(N(d1) - 1)
+gamma    0                              identical for the two legs, cancels
+vega     0                              identical for the two legs, cancels
+theta    0.01176399                     = r D (F_hat - K) / 252
+                                        = 0.156101 x 0.993480 x 19.12 / 252
 ```
 
-That $\Theta$ is **pure re-discounting**: the position holds $\hat F - K = 19.12$ points of
-intrinsic value, one day nearer, at $r = 15.61\%$. It contains no volatility term. The check
-passes only if $\Delta$, $\Gamma$, $\nu$ and the discount roll are simultaneously right, so a
-model that is merely self-consistent does not survive it.
+$\Delta$ is exactly $D$, not 1: a forward outright is worth a **discounted** point per point,
+which is the whole content of the convention this section adopted. The $-D\hat F n(d_1)\sigma /
+2\sqrt{T}$ term of $\Theta$ cancels too — it is the same for a call and a put at one strike — so
+what survives is the carry term applied to $C - P = D(\hat F - K)$: **pure re-discounting** on
+19.12 points of intrinsic value, with no volatility term anywhere in it. The check passes only if
+$\Delta$, $\Gamma$, $\nu$ and the discount are simultaneously right.
 
 ### Exposure across the forward
 
@@ -519,29 +562,37 @@ Two things are held fixed, and both are assumptions:
 
 - **$\sigma$ is sticky per strike.** Each strike keeps the volatility §4 solved for it; moving the
   forward does not re-solve the smile.
-- **$r$ is held at the fitted 15.61%**, so $D(T) = e^{-rT}$ — the same roll $\Theta$ uses one
-  session at a time, which makes the curves and the $\Theta$ figures agree by construction.
+- **$r$ is held at the fitted 15.61%**, so $D(T) = e^{-rT}$ — the same discount the $\Theta$ carry
+  term uses, which makes the curves and the $\Theta$ figures agree by construction.
 
 The family stops at half a day, not zero. The Greeks are undefined at expiry and the core raises
 there rather than returning a `NaN`: $\Gamma$ divides by a time-scaling that is zero, and $\Theta$
-is the change over a session that no longer exists. The *price* at $T = 0$ is well defined — it is
-the expiry line §2 derives — and this is exactly where the payoff and the exposure part company.
-
-Two readings, both measured:
+carries a $1/\sqrt{T}$. The *price* at $T = 0$ is well defined — it is the expiry line §2 derives
+— and this is exactly where the payoff and the exposure part company.
 
 | | Long Straddle at $\hat F$ | | | Iron Condor at $\hat F$ | |
 |---|---|---|---|---|---|
 | `dte_days` | $\Gamma$ | $\nu$ | $\Theta$ | $\Gamma$ | $\Theta$ |
-| 10.56 | 0.0009397 | 40.891 | −32.2121 | −0.0001580 | +4.6882 |
-| 5.00 | 0.0013654 | 28.228 | −48.7144 | −0.0003939 | +13.9887 |
-| 2.00 | 0.0021573 | 17.873 | −85.8503 | −0.0009671 | +38.7264 |
-| 0.50 | 0.0042973 | 8.909 | −128.8674 | −0.0011347 | +7.9783 |
+| 10.56 | 0.0009336 | 40.891 | −31.4010 | −0.0001570 | +4.3533 |
+| 5.00 | 0.0013612 | 28.228 | −46.1017 | −0.0003927 | +12.2280 |
+| 2.00 | 0.0021546 | 17.873 | −73.2459 | −0.0009659 | +31.8364 |
+| 0.50 | 0.0042959 | 8.909 | −146.3142 | −0.0011343 | +38.1301 |
 
-The straddle's $\Gamma$ multiplies by 4.57 while its $\nu$ falls to 22% of where it started: the
+The straddle's $\Gamma$ multiplies by 4.60 while its $\nu$ falls to 22% of where it started: the
 same position, bought as an opinion about $\sigma$, becomes an opinion about where the index
-closes. And the condor's $\Theta$ is **not monotone** — it peaks near two days and collapses into
-the final session, because a structure sitting between its short strikes has already converged on
-its maximum profit and has nothing left to decay.
+closes.
+
+The condor's $\Theta$ is **not monotone**, and the four rows above do not show it — they all sit
+on the rising side. Scanning a finer ladder puts the peak at **0.89 days (45.88)**, falling to
+**0.48** by a tenth of a day, because a structure sitting between its short strikes has already
+converged on its maximum profit and has nothing left to decay. Where the peak falls is a property
+of the $\Theta$ convention rather than of the position: the benchmark's one-session repricing puts
+it at 1.59 days, because a difference quotient over a session is capped by what the position is
+worth and a derivative is not.
+
+Finally, $\Delta$ is bounded by $D(T)\sum q_i$ rather than by $\sum q_i$, and the notebook asserts
+the tighter bound at all 400 grid points of all four curves for all 13 structures. Because
+$D \to 1$ as $T \to 0$, the bound closes onto $\sum q_i$ exactly as the curves flatten onto it.
 
 ### What is still open
 
@@ -558,3 +609,9 @@ the observed moment, and neither blocks the forward-swept charts.
   [#8](https://github.com/lalitkarthik/convex-hedge-payoff/issues/8)
   The DTE family above is an *exposure diagnostic* under a named sticky-strike assumption, not a
   P&L curve valued on a future date. Adopting it is not adopting an answer to this.
+
+A third question is now open and belongs with them: **which $\Theta$ a Greeks table should
+report.** #27 will have to choose. This file reports the Black-76 derivative because it is
+consistent with the other three and with the price formula; the benchmark reports the one-session
+repricing because it is what a trader reads and it cannot exceed the premium. The measurement
+above is the input to that decision, not the decision.

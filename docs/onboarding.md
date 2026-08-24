@@ -199,9 +199,19 @@ shared with its in-the-money twin — verified on 100% of both-sided strikes. Co
 test must assert against the Greeks columns and **never** against the last-price column, and the UI
 shows one shared IV column rather than one per side.
 
+**Delta and gamma in this data are undiscounted.** `greeks.parquet` reports $N(d_1)$, not
+$D\,N(d_1)$ — the true Black-76 partial. The two are one multiplication apart, verified exactly on
+all 517,672 rows, and $D$ runs as low as 0.982, so the gap reaches 1.77% of the figure: large
+enough to matter, small enough to look like rounding. Vega is already discounted. Whichever
+convention you write, say which one in the docstring.
+
 **Theta is not the textbook formula.** In this data it is a one-trading-day repricing. Against the
 oracle, the repricing definition matches to `4.5e-12`; the analytic formula is off by `4.1e-01`.
-Write the analytic one and your tests will fail for a reason that looks like a bug and isn't.
+Write the analytic one *by accident* and your tests will fail for a reason that looks like a bug
+and isn't. §5 of [`docs/calculations.md`](./calculations.md) writes it *on purpose* and measures
+the cost — a median 2.42% beyond five days, over 1,200% inside the final half-session. That is a
+documented choice for one section, not a licence: anything graded against `greeks.parquet` still
+needs the repricing form.
 
 **Time is a trading-day clock.** One session is exactly 1.0 day. Nothing decays overnight or at
 weekends. Years are trading days ÷ 252, not ÷ 365.
