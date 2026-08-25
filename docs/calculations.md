@@ -334,6 +334,36 @@ strike — it solves the OTM leg and copies the answer to the in-the-money twin,
 is stale. Inverting the ITM quote disagrees with the Oracle by construction. See
 `Data/sample/README.md`.
 
+**The sharing is a copy, not an agreement.** All 4,587 in-the-money rows with a twin carry a
+`float64` identical to that twin's, bit for bit. And it is a convention rather than a necessity:
+only **5** of those 4,587 prints sit below discounted intrinsic and so admit no $\sigma$ at all.
+The other 4,582 would solve — to a *different* number, because the print is stale. We prefer the
+OTM leg because it is fresh, not because the ITM leg is unusable.
+
+#### The 392 rows the rule above does not reach
+
+Stated as "invert the OTM leg", the rule addresses 18,602 of the day's 23,581 rows and is silent
+about 392 of them: strike-minutes where the **in-the-money leg is the only one that printed**.
+There is no OTM quote to invert and no twin to copy from.
+
+The Oracle solves those from the in-the-money print, and so do we — inverted from its own `last`,
+agreeing to $1.6 \times 10^{-11}$. Leaving them blank would not cost one row: the Chain is served
+as-of, so a strike with no volatility stays blank at every later moment until it prints again, and
+these 392 are spread across **220 of the day's 376 minutes**.
+
+So the rule has three cases, and together they reproduce **every** row:
+
+| case | rows | $\sigma$ from |
+|---|---|---|
+| out of the money | 18,602 | its own `last` |
+| in the money, twin quoted that minute | 4,587 | **copied** from the twin |
+| in the money, nothing else quoted | 392 | its own `last` |
+
+**Each quote is inverted in its own minute**, against that minute's $\hat F$ and $D$ — never
+against the moment the Chain is requested for. Served as-of, a print can be 153 minutes older than
+the forward beside it in the response, and inverting it against a forward that has moved a hundred
+points since measures the drift rather than the volatility.
+
 ### Convergence
 
 Newton replaces the curve by its tangent and jumps to where the tangent crosses zero. Near the
@@ -383,10 +413,39 @@ Measured across all 46 legs of the slice:
 | $\max(\text{BS},\,\sqrt{2\lvert \ln(\hat F/K)\rvert / T})$ | 46 / 46 | 6 |
 | flat $\sigma_0 = 0.20$ | **46 / 46** | **4** |
 
-A flat 20% wins on both counts. The chain quotes 15.7% to 21.4%, so a constant is never far from
-any root, and the cleverer seeds buy nothing. **The naive seed beats the derived one here**, and
-the reason is specific rather than general: one expiry, a narrow volatility range, and a known
-market.
+A flat 20% wins on both counts. At this minute the chain quotes 15.7% to 21.4%, so a constant is
+never far from any root, and the cleverer seeds buy nothing. **The naive seed beats the derived one
+here**, and the reason is specific rather than general: one expiry, a narrow volatility range, and
+a known market.
+
+#### The seed is the weakest constant in this file, and it will have to change
+
+The table above is measured on 46 legs at one minute. Across the day's **18,994** invertible rows
+the picture is the same shape and much less comfortable:
+
+| flat seed | sweeps to converge | rows failing to reach $10^{-9}$ |
+|---|---|---|
+| 0.02 | — | 15,319 |
+| 0.05 | — | 9,479 |
+| 0.10 | — | 958 |
+| **0.15** | 9 | **0** |
+| **0.20** | **5** | **0** |
+| 0.30 | 6 | 0 |
+| 1.00 | 8 | 0 |
+| 2.00 | 8 | 0 |
+
+**The safe window is one-sided.** Seeding too high is nearly free — 2.00 costs three extra sweeps
+and loses nothing, because the S-curve's upper arm is well behaved and Newton walks down it.
+Seeding too low falls off the flat shelf described above, and the edge sits **between 0.10 and
+0.15** — five volatility points below the seed we ship.
+
+That margin is smaller than it looks. Across the full day solved $\sigma$ runs **9.84% to 24.97%**,
+not the 15.7–21.4% of the anchor minute, so a 0.10 seed is already *inside* the range this very
+market quotes and still fails 958 rows. A quieter day, or an expiry further out, sits under it.
+
+$\sigma_0 = 0.20$ is a constant fitted to one expiry in one market on one day. It is correct here,
+it is not correct in general, and the fix when it comes is a **bisection fallback for rows Newton
+abandons, or a moneyness-aware seed** — not a different constant, which would only move the cliff.
 
 ### Verification
 
@@ -399,7 +458,32 @@ Graded three ways at the 12:00 snapshot, 46 legs, all asserted in the notebook:
 | iteration ceiling | max 5, median 4 |
 
 The iteration ceiling is a real check, not decoration — it is what catches the divided-by-100
-vega, which produces correct answers slowly rather than wrong answers loudly.
+vega, which produces correct answers slowly rather than wrong answers loudly. It is the one
+assertion in this section that a wrong answer cannot satisfy by being right eventually, which is
+why `tests/test_implied_vol.py` passes the ceiling in rather than leaving it at its default.
+
+The engine repeats all of it across the whole day (#52), and the three cases above cover it:
+
+| | |
+|---|---|
+| strike-minutes inverted | 18,994 |
+| strike-minutes copied from a twin | 4,587 |
+| rows reproduced | **23,581 of 23,581** |
+| max $\lvert \sigma - \texttt{iv} \rvert$ | $5.4 \times 10^{-13}$ |
+| vectorised sweeps, whole day | 5 |
+| strikes with no solvable $\sigma$ | 0 |
+
+Implemented in `chain.solved_volatility()`, which inverts every minute of the day on first use and
+costs **1.4 s** — of which the Newton itself is 30 ms and the rest is the 376 forward fits from §1
+that the classification needs.
+
+### Where $\sigma$ is used
+
+- It is what the Chain publishes: one number per strike, never one per side (#28).
+- It is what `resolve_legs` attaches to a Leg. **The client cannot supply it** — `LegRequest` has
+  no such field and rejects one with a 422, because a wrong volatility does not fail loudly, it
+  draws a plausible chart nothing downstream would catch.
+- §5's Greeks price on $(\hat F, K, T, \sigma, D)$, and this is the $\sigma$.
 
 ### What the slice shows
 

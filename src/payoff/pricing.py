@@ -124,43 +124,95 @@ def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
 
 
 VOL_SEARCH_BRACKET = (1e-6, 5.0)
-"""Where the solver looks. The sample's volatilities run 0.098 to 0.250, so 500% is
-far outside anything this market quotes - wide enough that a bracket failure means the
-price is not attainable at any volatility, not that the search was too narrow."""
+"""Where the solver is allowed to go. The sample's solved volatilities run 0.098 to
+0.250, so 500% is far outside anything this market quotes - wide enough that hitting the
+edge means the price is not attainable at any volatility, not that the search was too
+narrow."""
 
-BISECTION_STEPS = 100
-"""Halving a bracket 100 times exhausts double precision many times over. It is a fixed
-count rather than a convergence check so the work is the same on every row, which is
-what keeps the solve vectorised."""
+VOL_SEED = 0.20
+"""The flat seed every row starts from, and the weakest constant in this module.
+
+Section 4 measures it: Brenner-Subrahmanyam, the textbook seed, converges on 22 of the
+anchor's 46 legs, and a flat 0.20 on all 46 in a median of 4 iterations. But the safety
+is **one-sided**. Sweeping the seed across the day's 18,994 invertible rows, everything
+from 0.15 upwards converges and 2.00 costs only three extra sweeps, while 0.10 fails 958
+rows and 0.05 fails 9,479. The cliff is between 0.10 and 0.15 - 0.05 below this seed -
+and the day's own volatilities reach down to 0.098. A quieter day sits under it.
+
+It is a constant fitted to one expiry in one market and it will have to change. The
+replacement is a bisection fallback or a moneyness-aware seed, not a different number."""
+
+VOL_TOLERANCE = 1e-8
+"""Convergence, measured on the **residual** rather than on the volatility. It is the
+price that is driven to zero, and a hundredth of a paisa means a different thing at each
+strike; a tolerance in volatility units would be tighter on the wings than at the money
+without anyone choosing that."""
+
+MAX_SWEEPS = 50
+"""Newton's ceiling. Five is enough for every row of the sample; fifty is a runaway
+guard, not a working budget. Callers that want the count to *mean* something - the test
+that catches the vega divided by 100 - pass a tighter one."""
+
+VEGA_FLOOR = 1e-12
+"""Below this the tangent is flat and the step diverges. As volatility falls the price
+collapses onto intrinsic and vega decays super-exponentially: at a Brenner-Subrahmanyam
+seed of 0.0116 on the 23,500 put, vega is 3.8e-189 - 191 orders of magnitude below its
+value at the answer. No step size recovers from that, so the sweep stops instead."""
 
 
-def implied_vol(price, forward, strike, T, discount, *, is_call: bool):
+def implied_vol(price, forward, strike, T, discount, *, is_call: bool, max_sweeps=MAX_SWEEPS):
     """The volatility that reproduces `price` under this module's own Black-76.
 
-    Solved by bisection over every row at once. Newton's method would need fewer steps
-    per row but branches per row on convergence, which is exactly the loop the
-    vectorisation exists to avoid; 100 halvings cost 100 vectorised prices regardless
-    of how many rows there are.
+    Newton-Raphson, every row at once, seeded flat. The derivative is a Greek this
+    module already knows - vega - but it must be the **raw** one:
 
-    Price is monotonically increasing in volatility, so a bracket that does not contain
-    the price contains no solution at all - that raises rather than returning the edge
-    of the search, because silently returning 500% volatility would put a plausible
-    curve on the screen (ADR-0001).
+        f(s)  = Black76(F, K, T, s, D) - price
+        f'(s) = D F phi(d1) sqrt(T)
+
+    `black76_greeks` returns that divided by 100, because the Oracle quotes vega per
+    volatility *point*. Feeding the Oracle's form to Newton makes every step a hundred
+    times too small: the solver still converges, just several hundred iterations later,
+    so it reads as sluggishness rather than as the bug it is. The formula is written out
+    here rather than reused for exactly that reason.
+
+    The tolerance is in **price** units, not volatility units - it is the residual that
+    is driven to zero, and a hundredth of a paisa of price is a different quantity at
+    each strike.
+
+    Price is monotonically increasing in volatility, so a price the bracket cannot reach
+    is a price no volatility reproduces. That raises rather than returning the edge of
+    the search: silently handing back 500% would put a plausible curve on the screen
+    (ADR-0001).
     """
     price = np.asarray(price, dtype=float)
-    low = np.full(price.shape, VOL_SEARCH_BRACKET[0], dtype=float)
-    high = np.full(price.shape, VOL_SEARCH_BRACKET[1], dtype=float)
+    forward = np.asarray(forward, dtype=float)
+    strike = np.asarray(strike, dtype=float)
+    T = np.asarray(T, dtype=float)
+    discount = np.asarray(discount, dtype=float)
 
-    def priced_at(vol):
-        return black76_price(forward, strike, T, vol, discount, is_call=is_call)
+    low, high = VOL_SEARCH_BRACKET
+    vol = np.full(np.broadcast(price, forward, strike, T, discount).shape, VOL_SEED)
 
-    if np.any(price < priced_at(low)) or np.any(price > priced_at(high)):
-        raise ValueError("no volatility in the search bracket reproduces this price")
+    for _ in range(max_sweeps):
+        residual = black76_price(forward, strike, T, vol, discount, is_call=is_call) - price
+        if np.all(np.abs(residual) < VOL_TOLERANCE):
+            return vol
 
-    for _ in range(BISECTION_STEPS):
-        middle = 0.5 * (low + high)
-        too_low = priced_at(middle) < price
-        low = np.where(too_low, middle, low)
-        high = np.where(too_low, high, middle)
+        d1 = (np.log(forward / strike) + 0.5 * vol**2 * T) / (vol * np.sqrt(T))
+        vega = discount * forward * norm.pdf(d1) * np.sqrt(T)
 
-    return 0.5 * (low + high)
+        # A collapsed vega stops that row rather than launching it: the step is the
+        # residual over a number on its way to zero. The row then fails the convergence
+        # check below, which is the outcome that gets reported.
+        collapsed = vega < VEGA_FLOOR
+        step = np.where(collapsed, 0.0, residual / np.where(collapsed, 1.0, vega))
+        moved = np.clip(vol - step, low, high)
+        if np.array_equal(moved, vol):
+            break
+        vol = moved
+
+    residual = black76_price(forward, strike, T, vol, discount, is_call=is_call) - price
+    unsolved = int(np.count_nonzero(np.abs(residual) >= VOL_TOLERANCE))
+    if unsolved:
+        raise ValueError(f"no volatility reproduces the price on {unsolved} of {vol.size} rows")
+    return vol

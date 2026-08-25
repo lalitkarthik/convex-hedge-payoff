@@ -106,7 +106,7 @@ This distinction is what stops the engine cheating its own test. Columns split i
 
 **Oracle outputs** — the engine computes these itself and is graded against them; it must never read them:
 
-`forward` · `discount` · `delta` · `gamma` · `theta` · `vega` · `rho` · `vanna` · `volga` · `charm`
+`forward` · `discount` · `iv` · `delta` · `gamma` · `theta` · `vega` · `rho` · `vanna` · `volga` · `charm`
 
 `forward` and `discount` moved into this group with [#51](https://github.com/lalitkarthik/convex-hedge-payoff/issues/51),
 which taught the engine to recover them from put-call parity (`docs/calculations.md` §1). Read
@@ -120,12 +120,17 @@ in `tests/test_forward.py` and nowhere else.
 
 `last` (= `options.Close`) · `Open` / `High` / `Low` / `Volume` / `OpenInterest`
 
-`iv` sits awkwardly between the groups. It is a *solved* quantity, so in principle we should recover it
-ourselves from `last`. But [#2](https://github.com/lalitkarthik/convex-hedge-payoff/issues/2) established
-it is one value per strike, inverted from the **OTM** leg and shared with its ITM twin. So:
+`iv` used to sit awkwardly between the groups, listed as a model input on the grounds that it is what
+the Greeks are tested against. [#52](https://github.com/lalitkarthik/convex-hedge-payoff/issues/52)
+settled it: **`iv` is not an input.** It is a solved quantity, the engine solves it from `last`
+(`docs/calculations.md` §4), and `chain.load_chain()` drops the column alongside `forward` and
+`discount` so it cannot be read by accident. It is opened in `tests/test_implied_vol.py` and
+nowhere else in the tree.
 
-- Treat `iv` as an **input** when testing the Greeks (feed it in, check the Greeks come out).
-- Treat `iv` as an **output** when testing the IV solver (feed in the OTM `last`, check you recover it).
+The same nuance applies as to `forward` and `discount`, and it is easy to overstate the ban. A
+volatility is still exactly what `black76_greeks` wants as an **argument**, and a *test* may still
+feed this column into it — that is what `tests/test_oracle.py` does to grade the Greeks, and it is
+the Oracle being used as an Oracle. What is banned is the **engine** sourcing it from the file.
 
 Never assert `model_price == last` across the whole file. It holds for **100.0%** of OTM rows and only
 **6.2%** of ITM rows, because ITM prints are stale. That is a property of the market, not a bug.
