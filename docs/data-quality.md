@@ -102,11 +102,19 @@ This distinction is what stops the engine cheating its own test. Columns split i
 
 **Model inputs** — the engine is allowed to read these:
 
-`strike` · `option_type` · `dte_days` · `forward` · `discount` · spot (from `index.parquet`)
+`strike` · `option_type` · `dte_days` · spot (from `index.parquet`)
 
 **Oracle outputs** — the engine computes these itself and is graded against them; it must never read them:
 
-`delta` · `gamma` · `theta` · `vega` · `rho` · `vanna` · `volga` · `charm`
+`forward` · `discount` · `delta` · `gamma` · `theta` · `vega` · `rho` · `vanna` · `volga` · `charm`
+
+`forward` and `discount` moved into this group with [#51](https://github.com/lalitkarthik/convex-hedge-payoff/issues/51),
+which taught the engine to recover them from put-call parity (`docs/calculations.md` §1). Read
+the distinction carefully, because it is easy to overstate: a forward and a discount factor are
+still exactly what the pricing core wants as **arguments**, per ADR-0001. What changed is where
+they may come from. Sourcing them from this file is now the thing that is banned, and
+`chain.load_chain()` drops both columns at load so it cannot happen by accident. They are opened
+in `tests/test_forward.py` and nowhere else.
 
 **Market observables** — real prices, used to solve IV and to check repricing:
 

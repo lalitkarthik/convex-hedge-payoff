@@ -19,8 +19,11 @@ python scripts/build_sample.py
 |---|---|
 | Key | `ts` (UTC, minute), `strike`, `option_type` |
 | Market | `Open`, `High`, `Low`, `Close`, `Volume`, `OpenInterest`, `last`, `Ticker`, `spot` |
-| Model inputs | `forward`, `discount`, `dte_days`, `iv` |
-| Oracle outputs | `delta`, `gamma`, `theta`, `vega`, `rho`, `vanna`, `volga`, `charm` |
+| Model inputs | `dte_days`, `iv` |
+| Oracle outputs | `forward`, `discount`, `delta`, `gamma`, `theta`, `vega`, `rho`, `vanna`, `volga`, `charm` |
+
+`forward` and `discount` are graded against, never read: the engine recovers both from put-call
+parity (#51). `chain.load_chain()` drops them, so the runtime frame does not carry them at all.
 
 `ts` is **UTC**. Add 5h30m for IST. See [`docs/data-quality.md`](../../docs/data-quality.md) for why
 that matters and for the full list of traps in the source data.
