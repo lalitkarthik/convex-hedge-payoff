@@ -19,11 +19,12 @@ python scripts/build_sample.py
 |---|---|
 | Key | `ts` (UTC, minute), `strike`, `option_type` |
 | Market | `Open`, `High`, `Low`, `Close`, `Volume`, `OpenInterest`, `last`, `Ticker`, `spot` |
-| Model inputs | `dte_days`, `iv` |
-| Oracle outputs | `forward`, `discount`, `delta`, `gamma`, `theta`, `vega`, `rho`, `vanna`, `volga`, `charm` |
+| Model inputs | `dte_days` |
+| Oracle outputs | `forward`, `discount`, `iv`, `delta`, `gamma`, `theta`, `vega`, `rho`, `vanna`, `volga`, `charm` |
 
-`forward` and `discount` are graded against, never read: the engine recovers both from put-call
-parity (#51). `chain.load_chain()` drops them, so the runtime frame does not carry them at all.
+`forward`, `discount` and `iv` are graded against, never read. The engine recovers the first two from
+put-call parity (#51) and solves the third from the out-of-the-money `last` (#52).
+`chain.load_chain()` drops all three, so the runtime frame does not carry them at all.
 
 `ts` is **UTC**. Add 5h30m for IST. See [`docs/data-quality.md`](../../docs/data-quality.md) for why
 that matters and for the full list of traps in the source data.
@@ -37,4 +38,8 @@ the near-expiry zone where the data thins out and numerics get unstable.
 ## What must not be asserted against it
 
 `model_price == last` fails on in-the-money rows by design. `iv` is solved from the out-of-the-money
-leg and shared with its ITM twin, whose last print is stale. Grade against the Greeks columns instead.
+leg and shared with its ITM twin, whose last print is stale — the shared value is a **copy**, exact to
+the last bit, not two solves that agree. Grade against the Greeks columns instead.
+
+One case the "out-of-the-money leg" phrasing does not cover: on **392** strike-minutes only the
+in-the-money leg printed, and its `iv` is solved from that print. See `docs/calculations.md` §4.
