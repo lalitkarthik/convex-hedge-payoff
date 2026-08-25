@@ -22,7 +22,7 @@ import pandas as pd
 
 from payoff import forward as forward_maths
 from payoff.models import ChainQuote, ChainResponse, ChainRow, Leg, LegRequest
-from payoff.pricing import TRADING_DAYS_PER_YEAR
+from payoff.pricing import TRADING_DAYS_PER_YEAR, implied_vol
 
 RUNTIME_FILE = Path(__file__).resolve().parents[2] / "Data" / "sample" / "chain_2026-01-27.parquet"
 
@@ -40,10 +40,11 @@ class StrikeNotQuoted(LookupError):
         super().__init__(f"{strike:.0f} {option_type} is not quoted at or before this moment")
 
 
-#: Solved upstream and shipped in the file. The engine derives both itself (#51) and is
-#: graded against these columns in `tests/test_forward.py`, so they are dropped at load:
-#: an answer that cannot be read cannot be read by accident.
-ORACLE_COLUMNS = ("forward", "discount")
+#: Solved upstream and shipped in the file. The engine derives all three itself - the
+#: forward and the discount in #51, the volatility in #52 - and is graded against these
+#: columns in `tests/test_forward.py` and `tests/test_implied_vol.py`. They are dropped
+#: at load: an answer that cannot be read cannot be read by accident.
+ORACLE_COLUMNS = ("forward", "discount", "iv")
 
 
 @lru_cache(maxsize=1)
@@ -74,11 +75,20 @@ def paired_quotes(rows: pd.DataFrame) -> pd.DataFrame:
 
     Parity is an identity about a call and its put at one strike, so a strike quoting
     only one side has nothing to say and is dropped rather than half-used.
+
+    An intersection rather than a `pivot_table`, which produced the same frame on all
+    376 minutes and cost 4.7 ms of pandas overhead each time to reshape 58 rows. #52
+    calls this for every minute of the day at once, which turned that into 1.8 seconds;
+    every `/chain` request was already paying one of them.
     """
-    return (
-        rows.pivot_table(index="strike", columns="option_type", values="last")
-        .reindex(columns=["CE", "PE"])
-        .dropna()
+    calls = rows[rows.option_type == "CE"]
+    puts = rows[rows.option_type == "PE"]
+    shared, call_at, put_at = np.intersect1d(
+        calls.strike.to_numpy(float), puts.strike.to_numpy(float), return_indices=True
+    )
+    return pd.DataFrame(
+        {"CE": calls["last"].to_numpy(float)[call_at], "PE": puts["last"].to_numpy(float)[put_at]},
+        index=pd.Index(shared, name="strike"),
     )
 
 
@@ -103,6 +113,74 @@ def forward_at(moment: str | pd.Timestamp) -> forward_maths.ForwardFit:
     )
 
 
+@lru_cache(maxsize=1)
+def solved_volatility() -> pd.Series:
+    """One volatility per strike per minute, solved rather than read (#52).
+
+    Indexed by `(ts, strike)` and **not** by side, because that is what an implied
+    volatility is here: the source carries one number per strike and hands it to both
+    legs, which is why the interface shows a single centred column rather than two.
+
+    Which leg is inverted follows `docs/calculations.md` section 4 and the measurement
+    behind it:
+
+    - the **out-of-the-money** leg - the call when `K >= F_hat`, the put when `K < F_hat`
+      - because the in-the-money print is the stale one;
+    - failing that, whichever leg *is* quoted. On 392 strike-minutes only the in-the-money
+      side printed, and the source solves those from that print rather than leaving them
+      blank. Skipping them would blank the strike for every later moment too, since the
+      chain is served as-of.
+
+    **Each quote is inverted in its own minute**, against that minute's forward and
+    discount, never against the requested moment's. Served as-of, a print can be 153
+    minutes older than the forward beside it in the response; inverting it against a
+    forward that has moved a hundred points since measures the drift, not the volatility.
+
+    Solved for the whole day at once, on first use. It costs 29.5 ms - one vectorised
+    Newton sweep set over 18,994 rows - which is cheaper than the caching a per-moment
+    solve would need in order to avoid it.
+    """
+    chain = load_chain()
+    fits = {stamp: forward_at(stamp) for stamp in chain.ts.unique()}
+    forward = chain.ts.map(lambda stamp: fits[stamp].forward).to_numpy(float)
+    discount = chain.ts.map(lambda stamp: fits[stamp].discount).to_numpy(float)
+    strike = chain.strike.to_numpy(float)
+    is_call = (chain.option_type == "CE").to_numpy()
+    T = chain.dte_days.to_numpy(float) / TRADING_DAYS_PER_YEAR
+
+    out_of_money = np.where(is_call, strike >= forward, strike < forward)
+    at = pd.MultiIndex.from_arrays([chain.ts, chain.strike])
+    invert = out_of_money | ~at.isin(at[out_of_money])
+
+    volatility = np.empty(int(invert.sum()), dtype=float)
+    for call in (True, False):
+        side = (is_call == call)[invert]
+        rows = invert & (is_call == call)
+        volatility[side] = implied_vol(
+            chain["last"].to_numpy(float)[rows],
+            forward[rows],
+            strike[rows],
+            T[rows],
+            discount[rows],
+            is_call=call,
+        )
+
+    return pd.Series(volatility, index=at[invert], name="iv")
+
+
+@lru_cache(maxsize=1)
+def solved_chain() -> pd.DataFrame:
+    """The runtime frame with the volatility this engine solved for itself.
+
+    The `iv` column here is not the one the file shipped - that one is dropped at load.
+    A strike whose volatility did not solve carries `NaN` and reaches the wire as `null`
+    (ADR-0001 bans NaN there); on this day every quoted strike solves.
+    """
+    chain = load_chain()
+    return chain.assign(iv=pd.MultiIndex.from_arrays([chain.ts, chain.strike])
+                        .map(solved_volatility()))
+
+
 @lru_cache(maxsize=256)
 def snapshot(moment: str | pd.Timestamp) -> pd.DataFrame:
     """The Chain as-of `moment`: the last known quote for every strike at or before it.
@@ -118,7 +196,7 @@ def snapshot(moment: str | pd.Timestamp) -> pd.DataFrame:
     and the cache takes a repeat to microseconds.
     """
     moment = pd.Timestamp(moment)
-    at_or_before = load_chain()[lambda chain: chain.ts <= moment]
+    at_or_before = solved_chain()[lambda chain: chain.ts <= moment]
     latest = at_or_before.groupby(["strike", "option_type"], as_index=False).last()
 
     age = (moment - latest.ts).dt.total_seconds() // 60

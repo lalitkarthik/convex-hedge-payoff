@@ -204,3 +204,52 @@ def test_the_chain_says_whether_its_forward_was_measured_or_assumed(client):
     close = client.get("/chain", params={"moment": "2026-01-27T10:00:00"}).json()
     assert close["forward_method"] == "spot"
     assert close["forward"] == pytest.approx(close["spot"])
+
+
+ORPHAN_MOMENT = "2026-01-27T04:30:00"
+"""10:00 IST. The 25250 put printed and its call did not, and the put is in the money -
+the forward is 25,249.21, three-quarters of a point below the strike."""
+
+
+def test_a_strike_quoting_only_its_in_the_money_leg_still_carries_a_volatility(client):
+    """#52, and the case section 4 does not cover.
+
+    Section 4 says to invert the out-of-the-money leg. Measured across the day, that
+    rule addresses 18,602 of 23,581 rows and is silent about 392 of them - strike-minutes
+    where the *in-the-money* leg is the only one that printed, so there is no
+    out-of-the-money quote to invert and nothing to copy from.
+
+    The source solves those from the in-the-money print, and so does the engine. Skipping
+    them would not blank one row: the chain is served as-of, so a strike with no
+    volatility stays blank at every later moment until it prints again, and these 392 are
+    spread over 220 of the day's 376 minutes.
+
+    The expected value is the source's own - this is the one thing about it worth
+    grading, and it is graded in `test_implied_vol.py` across all 376 minutes. Here it is
+    only asserted that a client sees a number.
+    """
+    response = client.get("/chain", params={"moment": ORPHAN_MOMENT})
+    assert response.status_code == 200, response.text
+
+    row = next(r for r in response.json()["rows"] if r["strike"] == 25250.0)
+    assert row["put"] is not None
+    assert row["iv"] == pytest.approx(0.162652, abs=1e-6)
+
+
+def test_every_strike_in_the_chain_carries_a_volatility(client):
+    """#52: "never a fabricated value, never a NaN".
+
+    `ChainRow.iv` is nullable because a price no volatility reproduces has no honest
+    answer, and the wire must be able to say so. What is asserted here is that the
+    nullable case is not being used to paper over a solver that quietly gives up: across
+    the day, every strike a client can see carries a real number.
+
+    Sampled rather than swept - the whole-day claim belongs to `test_implied_vol.py`,
+    which makes it against the source column rather than against a range.
+    """
+    for moment in ("2026-01-27T03:45:00", "2026-01-27T06:30:00", "2026-01-27T10:00:00"):
+        rows = client.get("/chain", params={"moment": moment}).json()["rows"]
+        assert rows
+        for row in rows:
+            assert row["iv"] is not None, f"{row['strike']:.0f} at {moment}"
+            assert 0.0 < row["iv"] < 1.0, "a decimal, never a percentage"
