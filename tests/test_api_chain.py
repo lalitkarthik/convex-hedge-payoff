@@ -122,6 +122,12 @@ def test_the_header_shows_spot_and_one_fixed_expiry_and_nothing_invented(chain):
     deliberately not a term in this project, because no futures series exists and using
     the word would be an assumption dressed as an observation.
 
+    The fitted Forward is not an exception to this. A **futures price** would be an
+    observation, and there is no futures series here to observe; the Forward is *derived*
+    from the option prices by parity and carries a `forward_method` saying how (#51). The
+    distinction is the whole of CONTEXT.md's objection - one is a number we made up, the
+    other is a number we worked out.
+
     There is exactly one Expiry in the file, which is why this is text rather than a
     dropdown - and why calendars and diagonals are unbuildable here rather than merely
     deprioritised.
@@ -166,3 +172,35 @@ def test_a_leg_can_be_held_more_than_once(client):
     assert twice["net_premium"] == pytest.approx(2 * once["net_premium"], abs=1e-9)
     assert twice["breakevens"] == pytest.approx(once["breakevens"], abs=1e-9)
     assert twice["max_profit"] == pytest.approx(1341.5, abs=1e-6), "670.75 twice over"
+
+
+def test_the_chain_reports_the_forward_it_derived(chain):
+    """#51. The Forward is fitted from the quotes, never read from the file.
+
+    At the anchor the parity fit gives F-hat = 25,219.12 against a Spot of 25,100.25 - a
+    basis of +118.87, more than two 50-point strike intervals. That gap is why the
+    at-the-money strike is 25,200 and not 25,100, and why the Forward has to travel with
+    the chain rather than being recomputed by whoever needs it.
+    """
+    assert chain["forward"] == pytest.approx(25_219.12, abs=1e-2)
+    assert chain["discount"] == pytest.approx(0.993480, abs=1e-6)
+    assert chain["forward"] - chain["spot"] == pytest.approx(118.87, abs=1e-2)
+
+
+def test_the_chain_says_whether_its_forward_was_measured_or_assumed(client):
+    """#51. A forward that was assumed must not be mistakable for one that was fitted.
+
+    The regression is trustworthy on 316 of this day's 376 minutes. On the other 60 the
+    Forward is recovered from a single strike, or - where nothing quotes both sides at
+    the money - is simply Spot, which forces the basis to zero when it is really around
+    120 points. Every volatility and every Greek downstream prices off this number, so
+    the method travels with it rather than being inferred from how plausible it looks.
+    """
+    fitted = client.get("/chain", params={"moment": MOMENT}).json()
+    assert fitted["forward_method"] == "parity_fit"
+    assert fitted["forward"] != pytest.approx(fitted["spot"])
+
+    # 15:30 IST, the closing minute: not one strike quotes both a call and a put.
+    close = client.get("/chain", params={"moment": "2026-01-27T10:00:00"}).json()
+    assert close["forward_method"] == "spot"
+    assert close["forward"] == pytest.approx(close["spot"])

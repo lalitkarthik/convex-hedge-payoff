@@ -17,9 +17,12 @@ The core never sees a Chain. A strike absent from it raises **here** (#23).
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
+from payoff import forward as forward_maths
 from payoff.models import ChainQuote, ChainResponse, ChainRow, Leg, LegRequest
+from payoff.pricing import TRADING_DAYS_PER_YEAR
 
 RUNTIME_FILE = Path(__file__).resolve().parents[2] / "Data" / "sample" / "chain_2026-01-27.parquet"
 
@@ -37,10 +40,67 @@ class StrikeNotQuoted(LookupError):
         super().__init__(f"{strike:.0f} {option_type} is not quoted at or before this moment")
 
 
+#: Solved upstream and shipped in the file. The engine derives both itself (#51) and is
+#: graded against these columns in `tests/test_forward.py`, so they are dropped at load:
+#: an answer that cannot be read cannot be read by accident.
+ORACLE_COLUMNS = ("forward", "discount")
+
+
 @lru_cache(maxsize=1)
 def load_chain() -> pd.DataFrame:
     """Load the runtime file once, at boot, and keep it for the process's lifetime."""
-    return pd.read_parquet(RUNTIME_FILE).sort_values("ts").reset_index(drop=True)
+    chain = pd.read_parquet(RUNTIME_FILE).sort_values("ts").reset_index(drop=True)
+    return chain.drop(columns=list(ORACLE_COLUMNS))
+
+
+@lru_cache(maxsize=512)
+def strict_slice(moment: str | pd.Timestamp) -> pd.DataFrame:
+    """Every quote stamped at **one** minute - the latest minute at or before `moment`.
+
+    The counterpart to `snapshot()`, and not a substitute for it. A chain is served
+    as-of because a strict reading of it is too thin to trade from; a *fit* is run
+    strictly because the as-of view mixes quote ages up to 153 minutes apart, and the
+    regression's slope is the Discount Factor. Stale prints would land in it directly.
+    """
+    chain = load_chain()
+    stamps = chain.ts[chain.ts <= pd.Timestamp(moment)]
+    if stamps.empty:
+        raise StrikeNotQuoted(0.0, "--")
+    return chain[chain.ts == stamps.iloc[-1]]
+
+
+def paired_quotes(rows: pd.DataFrame) -> pd.DataFrame:
+    """One row per strike quoting **both** sides, with the two prices beside each other.
+
+    Parity is an identity about a call and its put at one strike, so a strike quoting
+    only one side has nothing to say and is dropped rather than half-used.
+    """
+    return (
+        rows.pivot_table(index="strike", columns="option_type", values="last")
+        .reindex(columns=["CE", "PE"])
+        .dropna()
+    )
+
+
+@lru_cache(maxsize=512)
+def forward_at(moment: str | pd.Timestamp) -> forward_maths.ForwardFit:
+    """The Forward and Discount Factor this moment implies (#51).
+
+    Slices the minute and hands `forward.fit_forward` arrays; the maths never sees a
+    chain. The result names the tier that produced it, because on 60 of this day's 376
+    minutes the regression cannot be trusted and the answer is assumed rather than
+    measured.
+    """
+    rows = strict_slice(moment)
+    paired = paired_quotes(rows)
+    return forward_maths.fit_forward(
+        strikes=paired.index.to_numpy(float),
+        calls=paired.CE.to_numpy(float),
+        puts=paired.PE.to_numpy(float),
+        quoted_strikes=rows.strike.unique(),
+        T=float(rows.dte_days.iloc[0]) / TRADING_DAYS_PER_YEAR,
+        spot=float(rows.spot.iloc[0]),
+    )
 
 
 @lru_cache(maxsize=256)
@@ -84,17 +144,29 @@ def spot_at(moment: str | pd.Timestamp) -> float:
 
 
 def at_the_money(moment: str | pd.Timestamp) -> float:
-    """The quoted strike nearest to Spot.
+    """The quoted strike nearest the **Forward** (#51).
 
-    Nearest **quoted** strike rather than Spot rounded to the grid: on a thin minute
-    the arithmetic answer may not be quoted at all, and a Preset that opens with an
-    unquoted Leg is worse than one that opens one strike away.
+    Not nearest Spot. The basis runs to +118.87 at the anchor minute, which is more than
+    two 50-point intervals, so the two anchors select different strikes - 25,200 against
+    25,100 - and every Preset centred here moves with it. Spot is where the index is; the
+    Forward is what the options are priced off, and the money is a fact about the options.
+
+    Nearest **quoted** strike rather than the arithmetic answer rounded to the grid: on a
+    thin minute the arithmetic answer may not be quoted at all, and a Preset that opens
+    with an unquoted Leg is worse than one that opens a strike away.
+
+    Chosen among strikes quoting both sides, which is the same set the fit ran on. Where
+    that set is empty - at the close, nothing quotes both - the choice widens to every
+    strike quoted that minute rather than failing: a coarser answer beats none.
     """
-    rows = snapshot(moment)
-    if rows.empty:
+    rows = strict_slice(moment)
+    paired = paired_quotes(rows)
+    candidates = (
+        paired.index.to_numpy(float) if len(paired) else np.sort(rows.strike.unique())
+    )
+    if not len(candidates):
         raise StrikeNotQuoted(0.0, "--")
-    spot = spot_at(moment)
-    return float(rows.strike.iloc[(rows.strike - spot).abs().argmin()])
+    return float(candidates[np.abs(candidates - forward_at(moment).forward).argmin()])
 
 
 def resolve_legs(requests: list[LegRequest], moment: str | pd.Timestamp) -> list[Leg]:
@@ -171,9 +243,13 @@ def as_of_view(moment: str | pd.Timestamp) -> ChainResponse:
         )
         for strike in sorted(sides)
     ]
+    fit = forward_at(moment)
     return ChainResponse(
         moment=str(pd.Timestamp(moment)),
         spot=spot_at(moment),
         expiry=expiry_label(),
+        forward=fit.forward,
+        discount=fit.discount,
+        forward_method=fit.method,
         rows=rows,
     )

@@ -23,6 +23,15 @@ disagree the first time anything sums or displays Quantity."""
 Quantity = Annotated[int, Field(ge=1)]
 """How many of a Leg were traded. At least one; the sign lives in Direction."""
 
+ForwardMethod = Literal["parity_fit", "single_strike_parity", "spot"]
+"""How a moment's Forward was arrived at (#51).
+
+The regression over both-sided strikes is trustworthy on 316 of the sample day's 376
+minutes. `single_strike_parity` inverts parity at one strike with the rate assumed at
+6.5%; `spot` means nothing quoted both sides at the money and there was nothing better
+than Spot itself. Published rather than inferred, because the three are indistinguishable
+by inspection and only the first is measured."""
+
 Finite = Annotated[float, Field(allow_inf_nan=False)]
 """A real number, and nothing else.
 
@@ -195,6 +204,23 @@ class ChainResponse(BaseModel):
     """Text, not a dropdown: the dataset holds exactly one Expiry, which is why a
     calendar or a diagonal has no second Leg to reference and is unbuildable here
     rather than merely deprioritised."""
+
+    forward: Finite
+    """The Forward this moment implies, fitted from the quotes themselves (#51).
+
+    Not read from the file. `CONTEXT.md:138` - the engine that reads the Oracle to
+    produce an answer has lost the point of the project - so `chain.load_chain()` drops
+    the column outright and this number is recovered from put-call parity instead."""
+
+    discount: Finite
+    """The Discount Factor for the same moment, recovered alongside the Forward from the
+    same fit. Never a rate: ADR-0001 keeps the rate out of every interface."""
+
+    forward_method: ForwardMethod
+    """Which tier of the ladder answered. On 60 of the sample day's 376 minutes the
+    regression cannot be trusted and the Forward is assumed rather than measured - and an
+    assumed number that cannot be told apart from a measured one is exactly the failure
+    ADR-0001 exists to catch."""
 
     rows: list[ChainRow]
 

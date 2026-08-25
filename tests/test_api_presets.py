@@ -13,8 +13,9 @@ Breakevens sit either side of the strike at the Net Premium distance tests the t
 trader would notice being wrong. The second kind survives any refactor that preserves
 the numbers.
 
-The anchor moment is 2026-01-27 06:30 UTC = 12:00 IST. Spot is 25100.25 there, so the
-at-the-money strike is 25100.
+The anchor moment is 2026-01-27 06:30 UTC = 12:00 IST. Spot is 25100.25 there and the
+fitted Forward is 25219.12, so the at-the-money strike is **25200** - the money is
+measured from the Forward, not from Spot (#51).
 """
 
 import pytest
@@ -23,7 +24,16 @@ from fastapi.testclient import TestClient
 from payoff.api import app
 
 MOMENT = "2026-01-27T06:30:00"
-ATM = 25100.0
+
+ATM = 25200.0
+"""The strike a Preset centres on when given none: the quoted strike nearest the
+**Forward**. Spot is 25100.25 and would select 25100; the basis of +118.87 moves it a
+full 50-point interval (#51)."""
+
+CENTRE = 25100.0
+"""An explicit centre, for the tests that pin one rather than letting a Preset default.
+Deliberately not ATM: a test that means "the strike I asked for" should break when the
+arithmetic breaks, not when the money moves."""
 
 FIVE = {"straddle", "strangle", "iron_condor", "credit_spread", "iron_fly"}
 
@@ -77,9 +87,11 @@ def test_a_straddles_breakevens_sit_a_net_premium_either_side_of_its_strike(clie
 def test_a_preset_defaults_to_the_money(client):
     """Story 17 is about saving picks, so the common case needs no parameters at all.
 
-    Spot is 25100.25 at the anchor minute and the chain is on a 50-point grid, so the
-    nearest strike is 25100. "Nearest quoted strike" rather than "spot rounded": on a
-    thin minute the arithmetic answer may not be quoted at all.
+    The Forward is 25219.12 at the anchor minute and the chain is on a 50-point grid, so
+    the nearest strike is 25200. Nearest the **Forward**, not Spot: Spot is 25100.25 and
+    would centre this straddle a full interval lower, on a strike that is not the money
+    (#51). "Nearest quoted strike" rather than the arithmetic answer, because on a thin
+    minute the arithmetic answer may not be quoted at all.
     """
     metrics = analyse(client, build(client, "straddle"))["metrics"]
 
@@ -124,7 +136,7 @@ def test_choosing_a_preset_is_the_same_as_picking_its_legs_by_hand(client):
     trader would have picked, and it goes through the one analysis endpoint, so there
     is no second path that could drift from the first.
     """
-    by_preset = analyse(client, build(client, "iron_condor", strike=25100.0, width=200.0))
+    by_preset = analyse(client, build(client, "iron_condor", strike=CENTRE, width=200.0))
     by_hand = analyse(
         client,
         [
@@ -147,7 +159,7 @@ def test_a_bought_strangle_risks_only_its_premium_and_keeps_its_upside(client):
     Bought, the upside is Unbounded and serialises as null. The downside is not: Spot
     cannot fall below zero, so the left tail always terminates (CONTEXT.md).
     """
-    metrics = analyse(client, build(client, "strangle", strike=25100.0, width=200.0))["metrics"]
+    metrics = analyse(client, build(client, "strangle", strike=CENTRE, width=200.0))["metrics"]
     low, high = metrics["breakevens"]
 
     assert low < 24900.0 < 25300.0 < high, "outside the two strikes, not between them"
@@ -166,7 +178,7 @@ def test_a_credit_spread_is_capped_on_both_sides_and_breaks_even_once(client):
     two must sum to the width. A put spread is the bullish one: it profits while Spot
     stays above the sold strike.
     """
-    spread = build(client, "credit_spread", strike=25100.0, width=200.0)
+    spread = build(client, "credit_spread", strike=CENTRE, width=200.0)
     metrics = analyse(client, spread)["metrics"]
 
     assert metrics["net_premium"] < 0, "received, not paid"
@@ -177,7 +189,7 @@ def test_a_credit_spread_is_capped_on_both_sides_and_breaks_even_once(client):
     )
 
     assert len(metrics["breakevens"]) == 1
-    assert 24900.0 < metrics["breakevens"][0] < 25100.0
+    assert 24900.0 < metrics["breakevens"][0] < CENTRE
 
 
 def test_an_iron_fly_keeps_the_condors_shape_with_its_body_closed(client):
@@ -188,15 +200,15 @@ def test_an_iron_fly_keeps_the_condors_shape_with_its_body_closed(client):
     trade. Both wings are bought, so both tails terminate and Reward/Risk means
     something.
     """
-    fly = analyse(client, build(client, "iron_fly", strike=25100.0, width=200.0))["metrics"]
-    condor = analyse(client, build(client, "iron_condor", strike=25100.0, width=200.0))["metrics"]
+    fly = analyse(client, build(client, "iron_fly", strike=CENTRE, width=200.0))["metrics"]
+    condor = analyse(client, build(client, "iron_condor", strike=CENTRE, width=200.0))["metrics"]
 
     assert fly["net_premium"] < 0, "a credit"
     assert fly["max_profit"] == pytest.approx(abs(fly["net_premium"]), abs=1e-9)
     assert fly["max_loss"] is not None
 
     low, high = fly["breakevens"]
-    assert low < ATM < high
+    assert low < CENTRE < high
     assert fly["max_profit"] > condor["max_profit"], "a sold straddle collects more"
     assert high - low < condor["breakevens"][1] - condor["breakevens"][0], "over a narrower range"
 
@@ -212,7 +224,7 @@ def test_a_presets_legs_are_ordinary_legs_and_stop_matching_it_when_edited(clien
     Removing a bought wing is the sharpest version: the structure that had a bounded
     loss now has an Unbounded one, and the engine says so rather than refusing.
     """
-    legs = build(client, "iron_condor", strike=25100.0, width=200.0)
+    legs = build(client, "iron_condor", strike=CENTRE, width=200.0)
     assert analyse(client, legs)["metrics"]["max_loss"] is not None
 
     bought_call = {"option_type": "CE", "direction": 1}
