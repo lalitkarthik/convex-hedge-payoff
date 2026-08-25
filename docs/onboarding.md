@@ -206,12 +206,12 @@ enough to matter, small enough to look like rounding. Vega is already discounted
 convention you write, say which one in the docstring.
 
 **Theta is not the textbook formula.** In this data it is a one-trading-day repricing. Against the
-oracle, the repricing definition matches to `4.5e-12`; the analytic formula is off by `4.1e-01`.
-Write the analytic one *by accident* and your tests will fail for a reason that looks like a bug
-and isn't. §5 of [`docs/calculations.md`](./calculations.md) writes it *on purpose* and measures
-the cost — a median 2.42% beyond five days, over 1,200% inside the final half-session. That is a
-documented choice for one section, not a licence: anything graded against `greeks.parquet` still
-needs the repricing form.
+oracle, the repricing definition matches to `4.5e-12`; the analytic formula is off by `4.1e-01` at
+the money and by `90.6` in the final half-session, where its `1/sqrt(T)` diverges and a repricing
+cannot — a contract cannot lose more in a day than it is worth. Write the analytic one and your
+tests will fail for a reason that looks like a bug and isn't. §5 of
+[`docs/calculations.md`](./calculations.md) computes it anyway, bucketed by expiry, so the
+rejection is measured rather than asserted.
 
 **Time is a trading-day clock.** One session is exactly 1.0 day. Nothing decays overnight or at
 weekends. Years are trading days ÷ 252, not ÷ 365.
