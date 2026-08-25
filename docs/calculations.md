@@ -59,15 +59,28 @@ Graded against the `forward` and `discount` columns, solved independently upstre
 | $D$ | 0.993480 | 0.993480 | $+0.000000$ |
 | $\hat F$ | 25,219.12 | 25,219.12 | $+0.00$ |
 
-$n = 9$, $R^2 = 0.99989$, $r = 15.61\%$. Asserted in the notebook, so CI fails if the
-formula drifts. Across the full session the same fit reproduces the source **exactly on
-316 of 376 minutes**.
+$n = 9$, $R^2 = 0.99989$, $r = 15.61\%$. Asserted in the notebook and again in
+`tests/test_forward.py`, so CI fails if the formula drifts.
+
+Across the full session the regression alone reproduces the source **exactly on 316 of 376
+minutes**. With the ladder below carrying the other 60, the engine reproduces **both columns
+on all 376**: worst forward error $2.2\times10^{-11}$, worst discount error
+$3.5\times10^{-14}$.
 
 ### The gate
 
-OLS returns a number whether the input deserves one or not. A fit is used only if
+OLS returns a number whether the input deserves one or not. The regression is trusted only if
 
 $$n \ge 5 \qquad \text{and} \qquad 0 < r < 30\%, \qquad r = -\frac{\ln D}{T}$$
+
+**The gate selects a tier. It does not reject a minute.** Where it fails, the ladder below
+answers instead.
+
+That is a reversal. This section previously declared rejected minutes out of scope, and
+[#51](https://github.com/lalitkarthik/convex-hedge-payoff/issues/51) was written to forbid any
+fallback. The cost was not paid where it was measured: a refused minute takes the chain, the
+implied volatilities and every Greek down with it, and 16% of a trading day is not an edge
+case. The refusal was purity bought with usability.
 
 ### Rejecting $F = S/D$
 
@@ -90,13 +103,13 @@ caps be asserted unchanged rather than merely observed to be close. This narrows
 from three candidates to two; it does not answer it, and a charting convention is not a pricing
 rule.
 
-### Why 60 minutes fail it
+### The 60 minutes that miss it
 
 Of the 376 minutes in the session:
 
 | | minutes |
 |---|---|
-| accepted | 316 |
+| fitted | 316 |
 | discount above 1 — a negative rate | 25 |
 | implied rate above 30% | 19 |
 | fewer than 5 paired strikes | 16 |
@@ -131,10 +144,36 @@ broken — the slope is off by under 1% — but that is enough, because $D$ *is*
 The narrower the strike range, the worse it gets: rejected minutes span a median of 850
 strike points, accepted ones 1,300.
 
-**Rejected minutes are out of scope for v1 and are not displayed.** The upstream data does
-fall back on them — a fixed $r = 6.5\%$, with $F$ from a single-strike parity at the strike
-nearest spot, or $F = S$ when no pair is usable. We deliberately do not implement that.
-Recorded so it is not rediscovered from scratch.
+### The fallback ladder
+
+Where the regression cannot be trusted, two weaker readings are tried in order. Every result
+records which tier produced it, because the three are indistinguishable by inspection and
+only the first is measured.
+
+| tier | how | minutes |
+|---|---|---|
+| `parity_fit` | the gated regression above | 316 |
+| `single_strike_parity` | $F = K^\* + \dfrac{C(K^\*) - P(K^\*)}{D}$, with $D = e^{-0.065\,T}$ | 50 |
+| `spot` | $F = S$ | 10 |
+
+$K^\*$ is the strike nearest spot, and tier 2 applies **only when that strike quotes both
+sides**. Where it does not there is nothing to invert and tier 3 answers.
+
+That rule is worth defending, because an obvious alternative is worse. The distance from spot
+to the nearest *paired* strike also separates the two groups cleanly on this data — 25.3 points
+against 29.4 — but a threshold chosen in that gap would be a constant fitted to the very column
+the test grades against. It would pass by construction. "Is the money strike paired?" has no
+constant in it and misclassifies none of the 60.
+
+**The assumed rate reaches the discount and stops there.** $r = 6.5\%$ builds $D$; it does not
+build $F$. Carrying it through as $F = S/D$ misses the source by a median of **54.63 points**
+across the 60 — more than a full 50-point strike interval, and the same failure the previous
+subsection records for $S/D$ at the anchor. The forward always comes out of traded prices.
+
+The 10 tier-3 minutes are the ones to watch. $F = S$ forces the basis to zero when it is
+really around 120 points, and every volatility and Greek downstream prices off that number.
+This is why `forward_method` travels on the wire rather than being inferred from how plausible
+the figure looks.
 
 ### A note on the moneyness filter
 
@@ -147,11 +186,13 @@ documentation of intent; the gate above does the work.
 
 - $\hat F$ selects the at-the-money strike — nearest the **forward**, not the spot. At the
   snapshot they differ by 118.87 points and select different strikes, 25,200 against
-  25,100.
+  25,100. Implemented in `chain.at_the_money()`, which chooses among strikes quoting both
+  sides — the same set the fit ran on — and widens to every quoted strike on the one minute
+  where none is paired.
 - $\hat F$ and $S$ are both drawn on the payoff chart. The position never depends on which one
   you read.
-- $D$ is not consumed downstream yet. It falls out of the same fit for free and is needed
-  the moment anything is priced before expiry.
+- $D$ is consumed by §4's volatility solve and §5's Greeks, which price on $(\hat F, D)$ and
+  never on a spot and a rate (ADR-0001).
 - $b = \hat F - S$ **is** consumed. It is the whole content of the forward-coordinate payoff
   view in §2, and the only quantity by which the two payoff charts differ.
 
