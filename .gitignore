@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 .ipynb_checkpoints/
+
+# Derived, not authored: scripts/build_runtime.py writes it and S3 holds it.
+Data/runtime/
