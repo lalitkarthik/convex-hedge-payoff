@@ -1,10 +1,22 @@
 name: CI
 
+# Path-filtered away from the frontend. `web/` carries no Python, so running ruff and
+# 65 pytest cases against a CSS change is noise that trains people to ignore a red tick.
+# A pull request touching both halves still runs this - `paths-ignore` only skips when
+# *every* changed file matches.
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
   push:
     branches: [main]
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
 
 # A second push to the same PR cancels the first - no point paying for a run
 # whose result is already stale.

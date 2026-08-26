@@ -1,0 +1,347 @@
+/*
+ * One stylesheet, plain CSS. No Tailwind, no UI library.
+ *
+ * The structure copies Sensibull; the appearance does not. Two things drive every choice
+ * here: the chain is a **dense numeric table**, so figures are tabular-aligned and the
+ * row height is tight; and a trader reads it for minutes at a time, so contrast is
+ * carried by weight and alignment rather than by colour.
+ */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --line: #e3e6ea;
+  --line-strong: #cdd3da;
+  --ink: #16202b;
+  --ink-soft: #5b6773;
+  --ink-faint: #93a0ac;
+
+  --call: #1f6feb;
+  --put: #d1383a;
+  --gain: #0f9d58;
+  --loss: #d1383a;
+  --accent: #4338ca;
+  --atm: #fff6d6;
+  --atm-line: #e0b400;
+
+  --stale: 0.45;
+
+  --radius: 6px;
+  --pad: 12px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* Every figure in this interface is compared against the one above it. */
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- shell */
+
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 1100px) {
+  .body { grid-template-columns: 1fr; overflow: auto; }
+}
+
+.panel {
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+  padding: var(--pad);
+}
+
+.main { overflow-y: auto; }
+
+/* --------------------------------------------------------------- header */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.brand { font-weight: 700; font-size: 15px; letter-spacing: 0.02em; }
+
+.stat { display: flex; flex-direction: column; line-height: 1.25; }
+.stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); }
+.stat-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+.stat-note { font-size: 11px; color: var(--ink-soft); }
+
+.chip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-soft);
+  background: var(--bg);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------- time control */
+
+.time { flex: 1 1 320px; min-width: 260px; display: flex; flex-direction: column; gap: 2px; }
+.time-row { display: flex; align-items: center; gap: 8px; }
+.time input[type="range"] { flex: 1; accent-color: var(--accent); }
+.time-ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-faint); }
+
+.step {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--radius);
+  width: 24px; height: 24px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.step:hover { background: var(--bg); }
+.step:disabled { opacity: 0.35; cursor: default; }
+
+/* ---------------------------------------------------------- chain table */
+
+.chain-wrap { padding: 0 0 40px; }
+
+table.chain {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+/* Two header rows, so each needs its own offset - a single `top: 0` stacks them and the
+   CALLS / PUTS banner scrolls away under the column names. */
+table.chain thead tr:first-child th { top: 0; }
+table.chain thead tr:nth-child(2) th { top: 21px; }
+
+table.chain thead th {
+  position: sticky;
+  z-index: 2;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-strong);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  font-weight: 600;
+  padding: 6px 6px;
+  text-align: right;
+}
+
+table.chain thead th.side-head {
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding-bottom: 2px;
+}
+.side-call { color: var(--call); }
+.side-put { color: var(--put); }
+
+table.chain tbody td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+table.chain tbody tr:hover td { background: #f0f4ff; }
+
+td.strike {
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  background: var(--bg);
+  border-left: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line-strong);
+  width: 92px;
+}
+
+td.iv {
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  background: var(--bg);
+  border-right: 1px solid var(--line-strong);
+  width: 64px;
+}
+
+tr.at-the-money td.strike,
+tr.at-the-money td.iv { background: var(--atm); }
+tr.at-the-money td.strike { box-shadow: inset 0 0 0 1px var(--atm-line); }
+
+/* A quote that is hours old is not a live price, and must not read as one. */
+.stale { opacity: var(--stale); }
+
+.age { font-size: 10px; color: var(--ink-faint); font-family: var(--mono); }
+
+/* An unquoted side renders empty. Never a zero, never a dash that reads as a price. */
+td.blank { background: repeating-linear-gradient(45deg, transparent, transparent 6px, #fafbfc 6px, #fafbfc 12px); }
+
+.bs { display: inline-flex; gap: 3px; }
+.bs button {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  border-radius: 3px;
+  width: 20px; height: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--ink-soft);
+  padding: 0;
+}
+.bs button.buy:hover { background: var(--call); border-color: var(--call); color: #fff; }
+.bs button.sell:hover { background: var(--put); border-color: var(--put); color: #fff; }
+
+/* --------------------------------------------------------------- panel */
+
+.panel h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+.legs { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+
+.leg {
+  display: grid;
+  grid-template-columns: 26px 1fr 34px 78px 22px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.leg .dir {
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  border-radius: 3px;
+  padding: 2px 0;
+  cursor: pointer;
+  border: none;
+  color: #fff;
+}
+.leg .dir.b { background: var(--call); }
+.leg .dir.s { background: var(--put); }
+
+.leg input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  font-size: 12px;
+}
+
+.leg .drop {
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.leg .drop:hover { color: var(--put); }
+
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line-strong); margin-bottom: 10px; }
+.tabs button {
+  border: none;
+  background: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* -------------------------------------------------------------- tables */
+
+table.kv { width: 100%; border-collapse: collapse; }
+table.kv td { padding: 5px 4px; border-bottom: 1px solid var(--line); }
+table.kv td:first-child { color: var(--ink-soft); }
+
+table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.grid th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  font-weight: 600;
+  padding: 4px;
+  text-align: right;
+  border-bottom: 1px solid var(--line-strong);
+}
+table.grid th:first-child { text-align: left; }
+table.grid td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+table.grid tr.total td { font-weight: 700; border-top: 1px solid var(--line-strong); }
+table.grid tr.here td { background: var(--atm); font-weight: 600; }
+
+.gain { color: var(--gain); }
+.loss { color: var(--loss); }
+
+.presets { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.presets button {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.presets button:hover { border-color: var(--accent); color: var(--accent); }
+
+.note { font-size: 11px; color: var(--ink-faint); margin-top: 10px; }
