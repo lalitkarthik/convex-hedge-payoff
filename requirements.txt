@@ -16,3 +16,16 @@ pydantic>=2.7
 # One process serves the engine; uvicorn is how it runs outside a test client.
 fastapi>=0.110
 uvicorn>=0.29
+
+# The runtime store: Hive-partitioned parquet, scanned lazily.
+#
+# Polars rather than pandas on the read path because the scan is the point - a filter
+# on a partition key skips whole files before a byte of column data is read, and the
+# projection reaches the parquet reader rather than a materialised frame. pandas stays
+# for scripts/ and the notebook.
+polars>=1.0
+
+# S3 only. Polars' cloud reader does not cache, so a partition is fetched once with
+# boto3 and scanned from disk after that - otherwise a trader dragging the time control
+# pays a round trip per frame.
+boto3>=1.34
