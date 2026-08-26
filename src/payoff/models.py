@@ -195,6 +195,14 @@ class AnalysisResponse(BaseModel):
     curve: Curve
     metrics: Metrics
 
+    table: Curve = Curve(spot=[], pnl_at_expiry=[])
+    """The Payoff Table (#29): the same P&L at Expiry, on the 50-point grid a trader
+    reads, rather than the 400-point one the chart draws.
+
+    The same `Curve` type as the chart deliberately - it is the same quantity sampled
+    twice, not two quantities, and the two must agree wherever they share a Spot. A type
+    of its own would invite them to drift."""
+
     greeks: list[LegGreeks] = []
     """One row per Leg, in the order the Legs were sent - the Greeks table is read
     beside them on screen (#27)."""
@@ -270,6 +278,40 @@ class ChainResponse(BaseModel):
     ADR-0001 exists to catch."""
 
     rows: list[ChainRow]
+
+
+class SessionResponse(BaseModel):
+    """What a client needs before it can ask for anything else.
+
+    Every other endpoint takes a `moment`, and until this existed there was no way to
+    learn which moments there are. The frontend held the list in a generated fixture
+    instead, which made the set of tradeable minutes a property of a build script rather
+    than of the data - and free to drift from it silently.
+
+    Bounds and counts as well as the list itself, because a slider needs its ends and a
+    trader reading "376" learns something the array does not tell them at a glance.
+    """
+
+    moments: list[str]
+    """Every minute that quoted, in session order, spelled as `/chain` accepts it.
+
+    Derived from the data and never from a clock: a minute in which nothing traded has
+    no bar, and offering it as a stop would return an empty Chain."""
+
+    moment_count: int = Field(ge=1)
+    first_moment: str
+    last_moment: str
+
+    expiry: str
+    """The single Expiry this dataset contains - text, not a dropdown."""
+
+    strike_min: Finite
+    strike_max: Finite
+    """The **day's** range, not a minute's. An axis that resized as the trader moved
+    through time would make two charts of the same Strategy incomparable."""
+
+    presets: list[str]
+    """The names the picker offers, and the names `/presets/{name}` will build."""
 
 
 class PresetResponse(BaseModel):

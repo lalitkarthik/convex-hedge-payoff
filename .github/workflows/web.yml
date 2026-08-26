@@ -1,0 +1,111 @@
+name: Web
+
+# The frontend half.
+#
+# Two jobs, because they answer different questions. `build` asks whether the frontend
+# compiles and its units hold - fast, no backend, no Python. `integration` asks the only
+# question neither half can answer alone: **do the two actually talk to each other?**
+#
+# That second job exists because everything else in this repo grades one side. pytest
+# grades the engine, bun test grades the codec, tsc grades the shapes - and not one of
+# them would notice a misconfigured rewrite, a moment format that disagreed, or a field
+# renamed on the seam. The build would be green and the chart would be blank.
+#
+# Bun rather than npm because that is what the machine this was built on has, and because
+# install and build are both several times faster.
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "src/payoff/**"
+      - ".github/workflows/web.yml"
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "src/payoff/**"
+      - ".github/workflows/web.yml"
+
+# No `branches:` filter on the pull_request trigger, and deliberately. It filters on the
+# **base** branch, so a pull request stacked on a feature branch gets no checks at all -
+# which is not "not green", it is *absent*, and an absent check looks fine at a glance.
+# That happened once already, on #62.
+#
+# `src/payoff/**` is in the paths because the frontend's types are generated from those
+# models: a change there can break the browser without touching a line under `web/`.
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: typecheck
+        run: bunx tsc --noEmit
+      - name: unit tests
+        run: bun test lib/
+      - name: build
+        run: bun run build
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+        working-directory: web
+
+      # The browser, and the libraries Ubuntu's runner image does not carry.
+      - name: install chromium
+        run: bunx playwright install --with-deps chromium
+        working-directory: web
+
+      - name: start the engine
+        run: |
+          python -m uvicorn payoff.api:app --port 8000 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/session > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/session > /dev/null
+        env:
+          PYTHONPATH: src
+
+      - name: start the frontend
+        run: |
+          bun run build
+          bun run start &
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:3000/ > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:3000/ > /dev/null
+        working-directory: web
+        env:
+          BACKEND_ORIGIN: http://127.0.0.1:8000
+
+      - name: drive it
+        run: bun test e2e/
+        working-directory: web
+        env:
+          E2E: "1"

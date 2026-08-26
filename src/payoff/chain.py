@@ -321,6 +321,37 @@ def expiry_label() -> str:
     return ticker.removeprefix("NIFTY")[:7]
 
 
+@lru_cache(maxsize=1)
+def moments() -> list[str]:
+    """Every minute a client may ask for, in session order.
+
+    **Derived from the data, never from a clock.** 09:15 to 15:30 IST is 376 minutes
+    here rather than the 376 a clock would give only by coincidence of this day; a
+    minute in which nothing quoted has no bar, and offering it as a stop on the time
+    control would hand a trader a slider position that returns an empty Chain.
+
+    **ISO 8601**, with the `T`, which is also what `as_of_view` echoes back. Pandas
+    parses `2026-01-27 06:30:00` and `2026-01-27T06:30:00` alike, so the two spellings
+    are interchangeable on the way *in* and were free to differ on the way out - and a
+    client that compares the moment on a Chain against the entry it asked for would have
+    found them unequal every single time, with nothing to see on screen. One spelling
+    out, and it is the one `Date` is specified to parse.
+    """
+    return [pd.Timestamp(stamp).isoformat() for stamp in load_chain().ts.unique()]
+
+
+@lru_cache(maxsize=1)
+def strike_bounds() -> tuple[float, float]:
+    """The lowest and highest strike quoted anywhere in the session.
+
+    The day's range, not a minute's: a single minute quotes fewer strikes than the day
+    does, and an axis that resized as the trader moved through time would make two
+    charts of the same Strategy incomparable.
+    """
+    strikes = load_chain().strike
+    return float(strikes.min()), float(strikes.max())
+
+
 def as_of_view(moment: str | pd.Timestamp) -> ChainResponse:
     """The Chain a trader sees: one row per strike, call and put either side.
 
@@ -352,7 +383,7 @@ def as_of_view(moment: str | pd.Timestamp) -> ChainResponse:
     ]
     fit = forward_at(moment)
     return ChainResponse(
-        moment=str(pd.Timestamp(moment)),
+        moment=pd.Timestamp(moment).isoformat(),
         spot=spot_at(moment),
         expiry=expiry_label(),
         forward=fit.forward,

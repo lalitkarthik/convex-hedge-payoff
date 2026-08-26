@@ -31,7 +31,7 @@ State lives in the issues, not in files. If the map and a file disagree, the map
 ```
 python -m venv .venv && source .venv/bin/activate    # .venv\Scripts\activate on Windows
 pip install -r requirements.txt -r requirements-dev.txt
-pytest          # expect: 6 passed
+pytest          # expect: 101 passed
 ruff check .    # expect: no output
 ```
 
@@ -41,3 +41,58 @@ there, and the project is largely the act of moving it into a package without ch
 
 The clone is ~46 MB because the market data is committed on purpose, so tests and CI need no
 external setup.
+
+## Running the website
+
+Two processes. The engine serves JSON; the frontend renders it and proxies to it, so the browser
+only ever talks to its own origin and no cross-origin policy exists to misconfigure (#25).
+
+```bash
+# terminal 1 - the engine
+PYTHONPATH=src .venv/bin/python -m uvicorn payoff.api:app --port 8000
+
+# terminal 2 - the frontend  (needs bun; there is no npm on the dev machine)
+cd web && bun install
+BACKEND_ORIGIN=http://127.0.0.1:8000 bun run dev
+```
+
+Then open **http://localhost:3000**. Two pages:
+
+| | |
+|---|---|
+| `/` | the Chain. Click **B** or **S** on a strike, or pick a Preset. |
+| `/analyse?moment=…&legs=…` | the chart, the metrics, the Greeks and the payoff table. |
+
+The Strategy lives in the URL, so the link you copy *is* the position — paste it into a fresh tab
+and the identical chart comes back.
+
+`BACKEND_ORIGIN` defaults to `http://127.0.0.1:8000`, so the second variable is only needed when
+the engine is somewhere else.
+
+### Checking the frontend
+
+```bash
+cd web
+bun test lib/        # units: the URL codec and the API client
+bunx tsc --noEmit
+bun run build
+
+# the integration check - needs both servers up, and a browser
+E2E=1 bun run e2e
+```
+
+`bun test lib/` needs nothing running. The e2e drives a real browser against a real engine and is
+the only check that catches a broken rewrite or a renamed field on the seam; CI runs it on every
+pull request that touches `web/` or `src/payoff/`.
+
+### After changing `models.py`
+
+The frontend's wire types mirror the schema, and two tests hold them to it:
+
+```bash
+.venv/bin/python scripts/dump_openapi.py     # rewrites web/openapi.json
+```
+
+Then update `web/lib/types.ts` to match. `tests/test_openapi_contract.py` fails if the committed
+schema drifts from the app; `tests/test_wire_types.py` fails if the TypeScript drifts from the
+schema.

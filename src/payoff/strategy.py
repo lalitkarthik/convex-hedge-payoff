@@ -62,6 +62,34 @@ def curve(legs: list[Leg], spot_centre: float) -> Curve:
     return Curve(spot=[float(s) for s in grid], pnl_at_expiry=[float(p) for p in pnl])
 
 
+TABLE_STEP = 50.0
+"""The strike spacing on this chain (#29).
+
+Rows land on strikes a trader could actually have traded, which is what makes the table
+readable against the Chain beside it. An interval picked for round numbers, or by
+dividing the range into N, would put rows between strikes.
+"""
+
+
+def payoff_table(legs: list[Leg], spot_centre: float, step: float = TABLE_STEP) -> Curve:
+    """The same P&L at Expiry as `curve`, sampled on the grid a trader reads.
+
+    **One computation, two presentations.** This is not a second calculation of the
+    chart - it is `pnl_at_expiry` again, on a coarser and rounder grid, which is why the
+    two agree exactly wherever they share a Spot. Publishing it beside the curve rather
+    than from an endpoint of its own is what keeps that true (#23, #29).
+
+    The grid is snapped to multiples of `step` rather than started at the range edge, so
+    the rows are 25,150 and 25,200 rather than 25,144.235 and 25,194.235 - and so the
+    strike itself is a row, which matters because that is where a straddle peaks.
+    """
+    low = np.ceil(spot_centre * (1 - SPOT_RANGE) / step) * step
+    high = np.floor(spot_centre * (1 + SPOT_RANGE) / step) * step
+    grid = np.arange(low, high + step / 2, step)
+    pnl = pnl_at_expiry(grid, legs)
+    return Curve(spot=[float(s) for s in grid], pnl_at_expiry=[float(p) for p in pnl])
+
+
 def _kinks(legs: list[Leg]) -> np.ndarray:
     """The Spots where the Expiry payoff changes slope, plus both tail ends.
 
@@ -72,8 +100,15 @@ def _kinks(legs: list[Leg]) -> np.ndarray:
 
     Working from the kinks rather than from a sampled grid is what makes the Breakevens
     exact instead of nearly right.
+
+    A Strategy with **no Legs** has no kinks: its P&L is flat zero everywhere. One point
+    is returned rather than none, because the callers take a max and a min over this and
+    an empty array has neither. No Legs is not an error state - it is what the page opens
+    in, and it is a reachable URL now that the analysis has an address of its own.
     """
     strikes = sorted({leg.strike for leg in legs})
+    if not strikes:
+        return np.array([0.0])
     return np.array([0.0, *strikes, strikes[-1] * 2.0])
 
 
@@ -82,7 +117,15 @@ def breakevens(legs: list[Leg]) -> list[float]:
 
     A Strategy may have none, one, or several (CONTEXT.md). Between two adjacent kinks
     the curve is a straight line, so each crossing is solved rather than searched for.
+
+    **No Legs means no Breakevens**, and specifically not "a Breakeven at zero". A flat
+    line at zero is zero at every Spot, so the crossing test finds the only kink there is
+    and would publish 0.0 - a Spot at which NIFTY does not trade, presented as a level
+    the trader breaks even at.
     """
+    if not legs:
+        return []
+
     points = _kinks(legs)
     pnl = pnl_at_expiry(points, legs)
 
