@@ -140,9 +140,13 @@ table.chain {
   font-size: 12px;
 }
 
+/* Two header rows, so each needs its own offset - a single `top: 0` stacks them and the
+   CALLS / PUTS banner scrolls away under the column names. */
+table.chain thead tr:first-child th { top: 0; }
+table.chain thead tr:nth-child(2) th { top: 21px; }
+
 table.chain thead th {
   position: sticky;
-  top: 0;
   z-index: 2;
   background: var(--surface);
   border-bottom: 1px solid var(--line-strong);

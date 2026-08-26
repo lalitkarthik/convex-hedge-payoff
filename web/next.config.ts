@@ -12,6 +12,10 @@ import type { NextConfig } from "next";
  *     return [{ source: "/api/:path*", destination: `${process.env.BACKEND_ORIGIN}/:path*` }];
  *   }
  */
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  // The dev overlay badge sits on top of the chain's bottom-left corner, which is where
+  // the deepest in-the-money calls are. Off, so the table is judged without it.
+  devIndicators: false,
+};
 
 export default nextConfig;

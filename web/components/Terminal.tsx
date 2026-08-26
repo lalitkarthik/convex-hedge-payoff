@@ -12,7 +12,7 @@ import PayoffTable from "./PayoffTable";
 import PresetPicker from "./PresetPicker";
 import TimeControl from "./TimeControl";
 
-import { loadChain, loadPreset, loadSession } from "@/lib/fixtures";
+import { loadChain, loadPreset } from "@/lib/fixtures";
 import {
   curve,
   legGreeks,
@@ -47,23 +47,25 @@ function nearestQuoted(chain: ChainResponse, target: number): number {
   );
 }
 
-export default function Terminal() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [index, setIndex] = useState(0);
-  const [chain, setChain] = useState<ChainResponse | null>(null);
+export default function Terminal({
+  session,
+  initialChain,
+  initialIndex,
+}: {
+  session: Session;
+  initialChain: ChainResponse;
+  initialIndex: number;
+}) {
+  const [index, setIndex] = useState(initialIndex);
+  const [chain, setChain] = useState<ChainResponse>(initialChain);
   const [legs, setLegs] = useState<Leg[]>([]);
   const [tab, setTab] = useState<Tab>("pnl");
 
+  // The server already handed us the opening minute, so this only runs when the trader
+  // moves the time control. `live` guards the race a fast drag creates: several fetches
+  // are in flight and only the last one asked for may win.
   useEffect(() => {
-    loadSession().then((loaded) => {
-      setSession(loaded);
-      // Open on the anchor minute - 12:00 IST, where every published figure was measured.
-      setIndex(Math.floor(loaded.moments.length / 2));
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!session) return;
+    if (index === initialIndex) return;
     let live = true;
     loadChain(session.moments[index]).then((loaded) => {
       if (live) setChain(loaded);
@@ -71,16 +73,12 @@ export default function Terminal() {
     return () => {
       live = false;
     };
-  }, [session, index]);
+  }, [session, index, initialIndex]);
 
-  const atTheMoney = useMemo(
-    () => (chain ? nearestQuoted(chain, chain.forward) : 0),
-    [chain],
-  );
+  const atTheMoney = useMemo(() => nearestQuoted(chain, chain.forward), [chain]);
 
   const addLeg = useCallback(
     (strike: number, optionType: OptionType, direction: Direction) => {
-      if (!chain) return;
       const row = chain.rows.find((candidate) => candidate.strike === strike);
       const quote = optionType === "CE" ? row?.call : row?.put;
       if (!quote) return;
@@ -102,7 +100,6 @@ export default function Terminal() {
 
   const applyPreset = useCallback(
     async (name: string) => {
-      if (!chain) return;
       const requests = await loadPreset(name);
       const built = requests.flatMap((request) => {
         const row = chain.rows.find((candidate) => candidate.strike === request.strike);
@@ -125,10 +122,6 @@ export default function Terminal() {
     },
     [chain],
   );
-
-  if (!session || !chain) {
-    return <div className="shell" style={{ padding: 24, color: "var(--ink-faint)" }}>Loading…</div>;
-  }
 
   const hasLegs = legs.length > 0;
   const metrics = hasLegs ? computeMetrics(legs) : null;

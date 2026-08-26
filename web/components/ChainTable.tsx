@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import type { ChainResponse, ChainRow, ChainQuote, Direction, OptionType } from "@/lib/types";
 import { count, greek, price, strike as fmtStrike, volatility } from "@/lib/format";
 
@@ -102,6 +104,19 @@ export default function ChainTable({
   atTheMoney: number;
   onPick: (strike: number, optionType: OptionType, direction: Direction) => void;
 }) {
+  const money = useRef<HTMLTableRowElement>(null);
+
+  // Open on the money. The chain spans 23,300 to 27,950 and the interesting strikes are
+  // in the middle, so a table scrolled to its top shows forty rows of deep out-of-the-
+  // money puts and an empty call side - which reads as broken rather than as far away.
+  //
+  // On mount only. Re-centring every time the time control moves would yank the view
+  // out from under someone reading a wing.
+  useEffect(() => {
+    money.current?.scrollIntoView({ block: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="chain-wrap">
       <table className="chain">
@@ -134,7 +149,11 @@ export default function ChainTable({
         </thead>
         <tbody>
           {chain.rows.map((row: ChainRow) => (
-            <tr key={row.strike} className={row.strike === atTheMoney ? "at-the-money" : ""}>
+            <tr
+              key={row.strike}
+              ref={row.strike === atTheMoney ? money : undefined}
+              className={row.strike === atTheMoney ? "at-the-money" : ""}
+            >
               <QuoteCells quote={row.call} side="CE" strike={row.strike} onPick={onPick} />
               <td className="strike">
                 {fmtStrike(row.strike)}
