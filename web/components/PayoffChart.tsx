@@ -10,7 +10,7 @@ import {
   YAxis,
 } from "recharts";
 
-import type { CurvePoint } from "@/lib/skeleton-maths";
+import type { Curve } from "@/lib/types";
 import { level, price } from "@/lib/format";
 
 /**
@@ -31,11 +31,19 @@ export default function PayoffChart({
   spot,
   breakevens,
 }: {
-  curve: CurvePoint[];
+  curve: Curve;
   spot: number;
   breakevens: number[];
 }) {
-  const values = curve.map((point) => point.pnl);
+  // The wire carries two parallel arrays, as `models.Curve` publishes them and as the
+  // prototype in #9 did; Recharts wants one array of records. Zipping is the whole of
+  // the adaptation - the arrays are guaranteed the same length by a validator on the
+  // model, so there is no ragged case to handle.
+  const points = curve.spot.map((value, index) => ({
+    spot: value,
+    pnl: curve.pnl_at_expiry[index],
+  }));
+  const values = curve.pnl_at_expiry;
   const high = Math.max(...values, 0);
   const low = Math.min(...values, 0);
 
@@ -46,7 +54,7 @@ export default function PayoffChart({
   return (
     <div style={{ width: "100%", height: 260 }}>
       <ResponsiveContainer>
-        <ComposedChart data={curve} margin={{ top: 8, right: 8, bottom: 4, left: 4 }}>
+        <ComposedChart data={points} margin={{ top: 8, right: 8, bottom: 4, left: 4 }}>
           <defs>
             <linearGradient id="pnl" x1="0" y1="0" x2="0" y2="1">
               <stop offset={zero} stopColor="#0f9d58" stopOpacity={0.75} />

@@ -1,6 +1,6 @@
 "use client";
 
-import type { Leg } from "@/lib/types";
+import type { LegRequest } from "@/lib/types";
 import { strike as fmtStrike } from "@/lib/format";
 
 /**
@@ -20,10 +20,15 @@ export default function LegsStrip({
   legs,
   onChange,
   onRemove,
+  readOnly = false,
 }: {
-  legs: Leg[];
-  onChange: (index: number, leg: Leg) => void;
-  onRemove: (index: number) => void;
+  legs: LegRequest[];
+  onChange?: (index: number, leg: LegRequest) => void;
+  onRemove?: (index: number) => void;
+  /** The Analyse page shows the Legs beside the numbers but does not edit them - the
+      quote a Leg is priced against lives on the Chain, and editing away from it would
+      be editing blind. */
+  readOnly?: boolean;
 }) {
   if (legs.length === 0) {
     return (
@@ -36,43 +41,48 @@ export default function LegsStrip({
   return (
     <div className="legs">
       {legs.map((leg, index) => (
-        <div className="leg" key={`${leg.strike}${leg.optionType}${index}`}>
+        <div className="leg" key={`${leg.strike}${leg.option_type}${index}`}>
           <button
             className={`dir ${leg.direction === 1 ? "b" : "s"}`}
             title="Flip between bought and sold"
-            onClick={() => onChange(index, { ...leg, direction: leg.direction === 1 ? -1 : 1 })}
+            disabled={readOnly}
+            onClick={() => onChange?.(index, { ...leg, direction: leg.direction === 1 ? -1 : 1 })}
           >
             {leg.direction === 1 ? "B" : "S"}
           </button>
 
           <span>
-            {fmtStrike(leg.strike)} {leg.optionType}
+            {fmtStrike(leg.strike)} {leg.option_type}
           </span>
 
           <input
             type="number"
             min={1}
             step={1}
-            value={leg.quantity}
+            value={leg.quantity ?? 1}
             aria-label="quantity"
+            readOnly={readOnly}
             onChange={(event) =>
-              onChange(index, { ...leg, quantity: Math.max(1, Number(event.target.value) || 1) })
+              onChange?.(index, { ...leg, quantity: Math.max(1, Number(event.target.value) || 1) })
             }
           />
 
           <input
             type="number"
             step={0.05}
-            value={leg.entryPremium}
+            value={leg.entry_premium ?? 0}
             aria-label="entry premium"
+            readOnly={readOnly}
             onChange={(event) =>
-              onChange(index, { ...leg, entryPremium: Number(event.target.value) })
+              onChange?.(index, { ...leg, entry_premium: Number(event.target.value) })
             }
           />
 
-          <button className="drop" onClick={() => onRemove(index)} aria-label="remove leg">
-            ×
-          </button>
+          {!readOnly && (
+            <button className="drop" onClick={() => onRemove?.(index)} aria-label="remove leg">
+              ×
+            </button>
+          )}
         </div>
       ))}
     </div>

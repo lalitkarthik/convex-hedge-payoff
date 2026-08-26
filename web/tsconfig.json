@@ -17,5 +17,6 @@
     "paths": { "@/*": ["./*"] }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "//": "Test files are excluded because they import `bun:test`, whose types live in `@types/bun` - a package the registry could not serve when this landed. `bun test` still runs them; tsc simply does not see them. Add `@types/bun` and delete the two globs below to bring them back under the typechecker.",
+  "exclude": ["node_modules", "**/*.test.ts", "e2e/**"]
 }

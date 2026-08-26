@@ -18,18 +18,18 @@ import { bound, level, price, ratio } from "@/lib/format";
  * trade.
  */
 export default function MetricsPanel({ metrics }: { metrics: Metrics }) {
-  const credit = metrics.netPremium < 0;
+  const credit = metrics.net_premium < 0;
 
   return (
     <table className="kv">
       <tbody>
         <tr>
           <td>Max profit</td>
-          <td className="num gain">{bound(metrics.maxProfit)}</td>
+          <td className="num gain">{bound(metrics.max_profit)}</td>
         </tr>
         <tr>
           <td>Max loss</td>
-          <td className="num loss">{bound(metrics.maxLoss)}</td>
+          <td className="num loss">{bound(metrics.max_loss)}</td>
         </tr>
         <tr>
           <td>Breakevens</td>
@@ -42,13 +42,13 @@ export default function MetricsPanel({ metrics }: { metrics: Metrics }) {
         <tr>
           <td>Net premium</td>
           <td className="num">
-            {price(Math.abs(metrics.netPremium))}{" "}
+            {price(Math.abs(metrics.net_premium))}{" "}
             <span style={{ color: "var(--ink-faint)" }}>{credit ? "credit" : "debit"}</span>
           </td>
         </tr>
         <tr>
           <td>Reward / risk</td>
-          <td className="num">{ratio(metrics.rewardRisk)}</td>
+          <td className="num">{ratio(metrics.reward_risk)}</td>
         </tr>
       </tbody>
     </table>

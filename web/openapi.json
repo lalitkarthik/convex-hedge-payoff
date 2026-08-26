@@ -1,0 +1,733 @@
+{
+  "components": {
+    "schemas": {
+      "AnalysisRequest": {
+        "additionalProperties": false,
+        "description": "Analyse one Strategy, as-of one moment.\n\nThere is no Strategy type: a Strategy is an ordered list of Legs and nothing more\n(CONTEXT.md). The order is the order the trader built them in, and it is preserved\nbecause the per-Leg Greeks table (#27) is read alongside the Legs on screen.\n\nThe moment is what the whole response is served as-of - the Chain, the Entry\nPremiums and the volatilities all come from it, so it is asked for once here rather\nthan per Leg.",
+        "properties": {
+          "legs": {
+            "items": {
+              "$ref": "#/components/schemas/LegRequest"
+            },
+            "title": "Legs",
+            "type": "array"
+          },
+          "moment": {
+            "title": "Moment",
+            "type": "string"
+          }
+        },
+        "required": [
+          "moment",
+          "legs"
+        ],
+        "title": "AnalysisRequest",
+        "type": "object"
+      },
+      "AnalysisResponse": {
+        "description": "Everything about one Strategy, in one response.\n\nDeliberately fat (#23). Splitting it would mean several round trips carrying the\nsame Legs and recomputing the same curve, and the trader would watch the numbers\narrive after the chart they belong to. #27 and #29 add the Greeks and the Payoff\nTable to this same response rather than to endpoints of their own.",
+        "properties": {
+          "curve": {
+            "$ref": "#/components/schemas/Curve"
+          },
+          "discount": {
+            "title": "Discount",
+            "type": "number"
+          },
+          "forward": {
+            "title": "Forward",
+            "type": "number"
+          },
+          "greeks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LegGreeks"
+            },
+            "title": "Greeks",
+            "type": "array"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/Metrics"
+          },
+          "moment": {
+            "title": "Moment",
+            "type": "string"
+          },
+          "spot": {
+            "title": "Spot",
+            "type": "number"
+          },
+          "table": {
+            "$ref": "#/components/schemas/Curve",
+            "default": {
+              "pnl_at_expiry": [],
+              "spot": []
+            }
+          },
+          "total_greeks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegGreeks"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "moment",
+          "spot",
+          "forward",
+          "discount",
+          "curve",
+          "metrics"
+        ],
+        "title": "AnalysisResponse",
+        "type": "object"
+      },
+      "ChainQuote": {
+        "description": "One side of one strike, as of a moment.\n\nThere is no implied volatility here. It is a property of the strike and is carried\nonce on the row, not once per side (#28).",
+        "properties": {
+          "age_minutes": {
+            "minimum": 0.0,
+            "title": "Age Minutes",
+            "type": "integer"
+          },
+          "delta": {
+            "title": "Delta",
+            "type": "number"
+          },
+          "last": {
+            "title": "Last",
+            "type": "number"
+          },
+          "open_interest": {
+            "title": "Open Interest",
+            "type": "number"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "number"
+          }
+        },
+        "required": [
+          "last",
+          "open_interest",
+          "volume",
+          "age_minutes",
+          "delta"
+        ],
+        "title": "ChainQuote",
+        "type": "object"
+      },
+      "ChainResponse": {
+        "description": "The Chain a trader browses, as-of one moment.",
+        "properties": {
+          "discount": {
+            "title": "Discount",
+            "type": "number"
+          },
+          "expiry": {
+            "title": "Expiry",
+            "type": "string"
+          },
+          "forward": {
+            "title": "Forward",
+            "type": "number"
+          },
+          "forward_method": {
+            "enum": [
+              "parity_fit",
+              "single_strike_parity",
+              "spot"
+            ],
+            "title": "Forward Method",
+            "type": "string"
+          },
+          "moment": {
+            "title": "Moment",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ChainRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "spot": {
+            "title": "Spot",
+            "type": "number"
+          }
+        },
+        "required": [
+          "moment",
+          "spot",
+          "expiry",
+          "forward",
+          "discount",
+          "forward_method",
+          "rows"
+        ],
+        "title": "ChainResponse",
+        "type": "object"
+      },
+      "ChainRow": {
+        "description": "One strike: calls on the left, puts on the right, the strike down the middle.\n\nEither side may be absent. Only strikes that actually traded in a minute have a\nbar, and served as-of a strike may have been quoted on one side only.",
+        "properties": {
+          "call": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChainQuote"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "iv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Iv"
+          },
+          "put": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChainQuote"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "strike": {
+            "title": "Strike",
+            "type": "number"
+          }
+        },
+        "required": [
+          "strike"
+        ],
+        "title": "ChainRow",
+        "type": "object"
+      },
+      "Curve": {
+        "description": "The chart's line: P&L at Expiry across a range of Spot values.\n\nTwo parallel arrays, as the prototype in #9 published them and as a chart consumes\nthem. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is\npremium-blind and is one subtraction away.",
+        "properties": {
+          "pnl_at_expiry": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Pnl At Expiry",
+            "type": "array"
+          },
+          "spot": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Spot",
+            "type": "array"
+          }
+        },
+        "required": [
+          "spot",
+          "pnl_at_expiry"
+        ],
+        "title": "Curve",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LegGreeks": {
+        "description": "One Leg's exposures, or a whole Strategy's - the shape is the same either way.\n\n**Per contract**: no Lot Size and no number of lots. Those are presentation\nmultipliers (#29) and a Greek that carried them could not be compared against\nanother Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because\nthat is what a per-Leg exposure row means to whoever reads it beside the Legs.\n\nConventions are stated once, in `pricing.black76_greeks`, and two of them surprise:\n**delta and gamma carry the discount factor** (#53), and **theta is a one-session\nrepricing** rather than the analytic derivative.",
+        "properties": {
+          "delta": {
+            "title": "Delta",
+            "type": "number"
+          },
+          "gamma": {
+            "title": "Gamma",
+            "type": "number"
+          },
+          "rho": {
+            "title": "Rho",
+            "type": "number"
+          },
+          "theta": {
+            "title": "Theta",
+            "type": "number"
+          },
+          "vega": {
+            "title": "Vega",
+            "type": "number"
+          }
+        },
+        "required": [
+          "delta",
+          "gamma",
+          "vega",
+          "theta",
+          "rho"
+        ],
+        "title": "LegGreeks",
+        "type": "object"
+      },
+      "LegRequest": {
+        "additionalProperties": false,
+        "description": "A Leg as a client is allowed to describe it.\n\nDeliberately narrower than a `Leg`: there is no implied volatility here, because\nthe server looks it up (#23). A wrong volatility does not fail loudly - it produces\na plausible chart that nothing downstream would catch - so the field does not exist\nto be got wrong, and unknown fields are rejected rather than ignored.\n\nEntry Premium is the one price a trader may legitimately supply (story 18, \"what if\nI had entered at X\"). Absent, the Chain's last traded price is used.",
+        "properties": {
+          "direction": {
+            "enum": [
+              1,
+              -1
+            ],
+            "title": "Direction",
+            "type": "integer"
+          },
+          "entry_premium": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Premium"
+          },
+          "option_type": {
+            "enum": [
+              "CE",
+              "PE"
+            ],
+            "title": "Option Type",
+            "type": "string"
+          },
+          "quantity": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "strike": {
+            "title": "Strike",
+            "type": "number"
+          }
+        },
+        "required": [
+          "strike",
+          "option_type",
+          "direction"
+        ],
+        "title": "LegRequest",
+        "type": "object"
+      },
+      "Metrics": {
+        "description": "The four numbers under the chart, plus the ratio between two of them.\n\nEvery one of them is a property of the Legs at Expiry. Net Premium is signed the\nway CONTEXT.md signs it: positive is paid out (a debit), negative is received (a\ncredit).",
+        "properties": {
+          "breakevens": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Breakevens",
+            "type": "array"
+          },
+          "max_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Loss"
+          },
+          "max_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Profit"
+          },
+          "net_premium": {
+            "title": "Net Premium",
+            "type": "number"
+          },
+          "reward_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reward Risk"
+          }
+        },
+        "required": [
+          "max_profit",
+          "max_loss",
+          "breakevens",
+          "net_premium",
+          "reward_risk"
+        ],
+        "title": "Metrics",
+        "type": "object"
+      },
+      "PresetResponse": {
+        "description": "What the picker offers, and what one of them builds.\n\nThe Legs come back as **requests**, not as resolved Legs: a Preset hands the client\nexactly what a trader would have picked by hand, and it goes back through the same\nendpoint. That is what makes \"analysing a Preset\" and \"selecting its Legs by hand\"\nthe same operation rather than two paths that agree.",
+        "properties": {
+          "legs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LegRequest"
+            },
+            "title": "Legs",
+            "type": "array"
+          },
+          "presets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Presets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "presets"
+        ],
+        "title": "PresetResponse",
+        "type": "object"
+      },
+      "SessionResponse": {
+        "description": "What a client needs before it can ask for anything else.\n\nEvery other endpoint takes a `moment`, and until this existed there was no way to\nlearn which moments there are. The frontend held the list in a generated fixture\ninstead, which made the set of tradeable minutes a property of a build script rather\nthan of the data - and free to drift from it silently.\n\nBounds and counts as well as the list itself, because a slider needs its ends and a\ntrader reading \"376\" learns something the array does not tell them at a glance.",
+        "properties": {
+          "expiry": {
+            "title": "Expiry",
+            "type": "string"
+          },
+          "first_moment": {
+            "title": "First Moment",
+            "type": "string"
+          },
+          "last_moment": {
+            "title": "Last Moment",
+            "type": "string"
+          },
+          "moment_count": {
+            "minimum": 1.0,
+            "title": "Moment Count",
+            "type": "integer"
+          },
+          "moments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Moments",
+            "type": "array"
+          },
+          "presets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Presets",
+            "type": "array"
+          },
+          "strike_max": {
+            "title": "Strike Max",
+            "type": "number"
+          },
+          "strike_min": {
+            "title": "Strike Min",
+            "type": "number"
+          }
+        },
+        "required": [
+          "moments",
+          "moment_count",
+          "first_moment",
+          "last_moment",
+          "expiry",
+          "strike_min",
+          "strike_max",
+          "presets"
+        ],
+        "title": "SessionResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "convex-hedge payoff engine",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/analyse": {
+      "post": {
+        "description": "Everything about one Strategy, as-of one moment, in one response.",
+        "operationId": "analyse_analyse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyse"
+      }
+    },
+    "/chain": {
+      "get": {
+        "description": "The Chain as-of a moment: one row per strike, call and put either side.",
+        "operationId": "read_chain_chain_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "moment",
+            "required": true,
+            "schema": {
+              "title": "Moment",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChainResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Chain"
+      }
+    },
+    "/presets": {
+      "get": {
+        "description": "The short list the picker offers.",
+        "operationId": "list_presets_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Presets"
+      }
+    },
+    "/presets/{name}": {
+      "get": {
+        "description": "The Legs a Preset builds, as a trader would have picked them by hand.\n\nReturned as requests rather than analysed here, so that choosing a Preset and\npicking its Legs off the Chain are the same operation and not two paths that agree.",
+        "operationId": "build_preset_presets__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "moment",
+            "required": true,
+            "schema": {
+              "title": "Moment",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strike",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Strike"
+            }
+          },
+          {
+            "in": "query",
+            "name": "width",
+            "required": false,
+            "schema": {
+              "default": 200.0,
+              "title": "Width",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "title": "Direction",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Build Preset"
+      }
+    },
+    "/session": {
+      "get": {
+        "description": "The day itself: which minutes exist, what expires, and what the picker offers.\n\nAsked once, at boot. Everything else takes a `moment`, and this is the only way to\nlearn which moments there are - so it is served from the data rather than from a\nclock, and a client that renders 376 stops is rendering 376 minutes that quoted.",
+        "operationId": "read_session_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Session"
+      }
+    }
+  }
+}

@@ -1,15 +1,22 @@
-import type { CurvePoint } from "@/lib/skeleton-maths";
+import type { Curve } from "@/lib/types";
 import { level, price } from "@/lib/format";
 
 /**
  * P&L at expiry across the strike grid, in 50-point steps — the interval this chain
  * actually trades on, so every row is a spot a strike exists at.
  *
- * The row nearest spot is highlighted, and it must agree with the chart read at the same
- * spot. Both come from the same function, which is what makes that agreement structural
- * rather than a coincidence worth checking.
+ * **These rows are the server's** (#29). They used to be computed here, which meant the
+ * table and the chart were two implementations of one quantity and free to drift; now
+ * they arrive in the same response and `tests/test_api_table.py` asserts they lie on the
+ * same line. The row nearest spot is highlighted, and the highlight is the only decision
+ * this component makes.
  */
-export default function PayoffTable({ rows, spot }: { rows: CurvePoint[]; spot: number }) {
+export default function PayoffTable({ table, spot }: { table: Curve; spot: number }) {
+  const rows = table.spot.map((value, index) => ({
+    spot: value,
+    pnl: table.pnl_at_expiry[index],
+  }));
+
   const nearest = rows.reduce(
     (best, row) => (Math.abs(row.spot - spot) < Math.abs(best.spot - spot) ? row : best),
     rows[0],

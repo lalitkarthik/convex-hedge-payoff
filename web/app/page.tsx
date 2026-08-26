@@ -1,31 +1,48 @@
-import Terminal from "@/components/Terminal";
-import { readChain, readSession } from "@/lib/server-fixtures";
+import ChainScreen from "@/components/ChainScreen";
+import LinkProblem from "@/components/LinkProblem";
+import { getChain, getSession } from "@/lib/api";
+import { LegsUrlError } from "@/lib/legs-url";
+import { decodeLegs, one, pickMoment } from "@/lib/strategy-url";
 
 /**
- * A **server component**, which is #17's answer and not an incidental choice: the page
- * fetches the initial Chain, and the table and panel below it are client components
- * because selection state and the chart are inherently interactive.
+ * **The Chain.** Where a Strategy is built.
  *
- * Fetching here means the first paint already has 91 strikes in it. It also means the
- * markup a browser receives contains the real table, so the page can be read without
- * running any JavaScript at all — which is how anyone checks the numbers are the ones
- * the engine produced.
+ * A server component, which is #17's answer and not an incidental choice: the page
+ * fetches the session and the chain, and only the table below it is a client component
+ * because selection is inherently interactive.
  *
- * It opens on the **anchor minute**, 12:00 IST, where every published figure in
- * `docs/calculations.md` was measured.
+ * Fetching here means the first paint already has 91 strikes in it, and that the markup
+ * a browser receives contains the real table — so the page can be read without running
+ * any JavaScript at all, which is how anyone checks the numbers are the engine's.
+ *
+ * The state it renders comes entirely from the URL. Picking a Leg or moving the time
+ * control rewrites the address bar, this component runs again, and the server returns
+ * the chain for the new minute. One data path, and it is the same one a pasted link
+ * takes.
  */
-/**
- * 12:00 IST = 06:30 UTC. Named rather than computed as a midpoint: the session's 376
- * minutes are only the ones that quoted, so they are not contiguous and the midpoint
- * lands at 12:23. Every published figure in `docs/calculations.md` was measured here.
- */
-const ANCHOR = "2026-01-27T06-30-00";
 
-export default async function Page() {
-  const session = await readSession();
-  const found = session.moments.indexOf(ANCHOR);
-  const opening = found === -1 ? Math.floor(session.moments.length / 2) : found;
-  const chain = await readChain(session.moments[opening]);
+export const dynamic = "force-dynamic";
+//: The chain is a function of a search parameter and the backend is live; a statically
+//: rendered copy would be one minute of one day, served forever.
 
-  return <Terminal session={session} initialChain={chain} initialIndex={opening} />;
+export default async function ChainPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const session = await getSession();
+  const moment = pickMoment(session, one(params.moment));
+
+  let legs;
+  try {
+    legs = decodeLegs(one(params.legs));
+  } catch (error) {
+    if (!(error instanceof LegsUrlError)) throw error;
+    return <LinkProblem message={error.message} moment={moment} />;
+  }
+
+  const chain = await getChain(moment);
+
+  return <ChainScreen session={session} chain={chain} legs={legs} />;
 }

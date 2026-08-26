@@ -5,7 +5,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test lib/",
+    "e2e": "E2E=1 bun test e2e/"
   },
   "dependencies": {
     "next": "^15.1.0",

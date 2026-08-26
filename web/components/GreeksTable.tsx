@@ -1,4 +1,4 @@
-import type { Greeks, Leg } from "@/lib/types";
+import type { LegGreeks, LegRequest } from "@/lib/types";
 import { greek, strike as fmtStrike } from "@/lib/format";
 
 /**
@@ -18,16 +18,16 @@ import { greek, strike as fmtStrike } from "@/lib/format";
  * Nothing here computes a Greek. These are per-contract values the engine produced,
  * multiplied by direction and quantity — arithmetic, not pricing.
  */
-const NAMES: (keyof Greeks)[] = ["delta", "gamma", "vega", "theta", "rho"];
+const NAMES: (keyof LegGreeks)[] = ["delta", "gamma", "vega", "theta", "rho"];
 
 export default function GreeksTable({
   legs,
   rows,
   total,
 }: {
-  legs: Leg[];
-  rows: (Greeks | null)[];
-  total: Greeks | null;
+  legs: LegRequest[];
+  rows: LegGreeks[];
+  total: LegGreeks | null;
 }) {
   return (
     <table className="grid">
@@ -43,10 +43,10 @@ export default function GreeksTable({
       </thead>
       <tbody>
         {legs.map((leg, index) => (
-          <tr key={`${leg.strike}${leg.optionType}${index}`}>
+          <tr key={`${leg.strike}${leg.option_type}${index}`}>
             <td>
-              {leg.direction === 1 ? "B" : "S"} {leg.quantity}× {fmtStrike(leg.strike)}{" "}
-              {leg.optionType}
+              {leg.direction === 1 ? "B" : "S"} {leg.quantity ?? 1}× {fmtStrike(leg.strike)}{" "}
+              {leg.option_type}
             </td>
             {NAMES.map((name) => (
               <td key={name} className="num">
