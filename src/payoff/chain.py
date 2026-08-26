@@ -22,7 +22,7 @@ import pandas as pd
 
 from payoff import forward as forward_maths
 from payoff.models import ChainQuote, ChainResponse, ChainRow, Leg, LegRequest
-from payoff.pricing import TRADING_DAYS_PER_YEAR, implied_vol
+from payoff.pricing import TRADING_DAYS_PER_YEAR, black76_greeks, implied_vol
 
 RUNTIME_FILE = Path(__file__).resolve().parents[2] / "Data" / "sample" / "chain_2026-01-27.parquet"
 
@@ -40,11 +40,18 @@ class StrikeNotQuoted(LookupError):
         super().__init__(f"{strike:.0f} {option_type} is not quoted at or before this moment")
 
 
-#: Solved upstream and shipped in the file. The engine derives all three itself - the
-#: forward and the discount in #51, the volatility in #52 - and is graded against these
-#: columns in `tests/test_forward.py` and `tests/test_implied_vol.py`. They are dropped
-#: at load: an answer that cannot be read cannot be read by accident.
-ORACLE_COLUMNS = ("forward", "discount", "iv")
+#: Solved upstream and shipped in the file. The engine derives every one of them itself -
+#: the forward and discount in #51, the volatility in #52, the Greeks in #53 - and is
+#: graded against these columns in `tests/test_forward.py`, `tests/test_implied_vol.py`
+#: and `tests/test_oracle.py`. They are dropped at load: an answer that cannot be read
+#: cannot be read by accident.
+#:
+#: `vanna`, `volga` and `charm` are dropped with the rest despite nothing deriving them.
+#: A column that survives the cull is a column something may quietly start serving.
+ORACLE_COLUMNS = (
+    "forward", "discount", "iv",
+    "delta", "gamma", "theta", "vega", "rho", "vanna", "volga", "charm",
+)
 
 
 @lru_cache(maxsize=1)
@@ -207,10 +214,32 @@ def snapshot(moment: str | pd.Timestamp) -> pd.DataFrame:
     # one that belongs to the strike is the freshest of the two.
     freshest = latest.sort_values("ts").groupby("strike").iv.last()
 
-    return latest.assign(
+    quotes = latest.assign(
         age_minutes=age.astype("int64"),
         strike_iv=latest.strike.map(freshest).astype(float),
     )
+
+    # Delta is **computed**, never read (#53). It is priced at the moment being asked
+    # about - this minute's forward, discount and T - and at the strike's one shared
+    # volatility, not at whatever minute each side last printed in. A delta is a property
+    # of the model now, not of when a print happened to land; pricing the two sides in
+    # two different minutes gives a call and a put whose deltas do not even satisfy
+    # parity, which is what the file's own columns do here.
+    fit = forward_at(moment)
+    delta = np.empty(len(quotes), dtype=float)
+    for call in (True, False):
+        side = (quotes.option_type == "CE").to_numpy() == call
+        if not side.any():
+            continue
+        delta[side] = black76_greeks(
+            fit.forward,
+            quotes.strike.to_numpy(float)[side],
+            fit.T,
+            quotes.strike_iv.to_numpy(float)[side],
+            fit.discount,
+            is_call=call,
+        )["delta"]
+    return quotes.assign(delta=delta)
 
 
 def spot_at(moment: str | pd.Timestamp) -> float:

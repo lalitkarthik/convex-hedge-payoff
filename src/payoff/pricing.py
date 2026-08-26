@@ -67,15 +67,26 @@ def black76_price(forward, strike, T, vol, discount, *, is_call: bool):
 
 
 def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
-    """Delta, gamma, vega, theta and rho **in the Oracle's conventions**.
+    """Delta, gamma, vega, theta and rho. Several conventions are not textbook.
 
-    Several of them are not textbook, and they are not converted for readability - a
-    confusing convention is a labelling problem, not a maths problem:
+    They are not converted for readability - a confusing convention is a labelling
+    problem, not a maths problem:
 
-    | delta, gamma | undiscounted                                          |
-    | vega         | per volatility point (a 1% move, so divided by 100)   |
-    | rho          | per one percent                                       |
-    | **theta**    | **a one-trading-day repricing, not the analytic form** |
+    | **delta, gamma** | **discounted** - see below                        |
+    | vega             | per volatility point (a 1% move, so divided by 100)   |
+    | rho              | per one percent                                       |
+    | **theta**        | **a one-trading-day repricing, not the analytic form** |
+
+    **Delta and gamma carry the discount factor, and the Oracle's do not** (#53). The
+    Black-76 price is `D[F N(d1) - K N(d2)]`, so every derivative of it inherits the D:
+    delta is `D N(d1)`, bounded by `[0, D]` rather than `[0, 1]`. A delta of exactly 1
+    would mean an undiscounted payoff, and this payoff is discounted.
+
+    The gap is exactly a factor of D - large enough to matter and small enough to read as
+    rounding. D runs 0.982269 to 1.000000 across the dataset, so it reaches **1.77%** on
+    delta. `docs/calculations.md` left the choice open for #27; #53 settled it, and
+    `test_oracle.py` scales the Oracle's two columns up to this convention rather than
+    scaling ours down to theirs.
 
     The theta convention is the expensive trap. Against the Oracle the repricing
     definition matches to 1.1e-11, while an analytic theta divided down to one session
@@ -112,8 +123,8 @@ def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
 
     return {
         "price": price,
-        "delta": norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0,
-        "gamma": norm.pdf(d1) / (forward * v),
+        "delta": discount * (norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0),
+        "gamma": discount * norm.pdf(d1) / (forward * v),
         "vega": discount * forward * norm.pdf(d1) * np.sqrt(T) / 100,
         "theta": repriced - price,
         "rho": (
