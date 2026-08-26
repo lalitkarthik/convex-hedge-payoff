@@ -13,7 +13,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from payoff import chain, presets, strategy
-from payoff.models import AnalysisRequest, AnalysisResponse, ChainResponse, PresetResponse
+from payoff.models import (
+    AnalysisRequest,
+    AnalysisResponse,
+    ChainResponse,
+    PresetResponse,
+    SessionResponse,
+)
 
 app = FastAPI(title="convex-hedge payoff engine")
 
@@ -41,8 +47,32 @@ def analyse(request: AnalysisRequest) -> AnalysisResponse:
         discount=fit.discount,
         curve=strategy.curve(legs, spot),
         metrics=strategy.metrics(legs),
+        table=strategy.payoff_table(legs, spot),
         greeks=rows,
         total_greeks=strategy.total_greeks(rows),
+    )
+
+
+@app.get("/session", response_model=SessionResponse)
+def read_session() -> SessionResponse:
+    """The day itself: which minutes exist, what expires, and what the picker offers.
+
+    Asked once, at boot. Everything else takes a `moment`, and this is the only way to
+    learn which moments there are - so it is served from the data rather than from a
+    clock, and a client that renders 376 stops is rendering 376 minutes that quoted.
+    """
+    stamps = chain.moments()
+    low, high = chain.strike_bounds()
+
+    return SessionResponse(
+        moments=stamps,
+        moment_count=len(stamps),
+        first_moment=stamps[0],
+        last_moment=stamps[-1],
+        expiry=chain.expiry_label(),
+        strike_min=low,
+        strike_max=high,
+        presets=list(presets.PRESETS),
     )
 
 
