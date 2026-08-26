@@ -1,0 +1,42 @@
+name: Web
+
+# The frontend half. Filtered to `web/` for the same reason CI is filtered away from it:
+# a Python-only pull request cannot break a Next.js build, and a tick that is always
+# green teaches nobody anything.
+#
+# Bun rather than npm because that is what the machine this was built on has, and because
+# install and build are both several times faster - which matters for a job whose whole
+# purpose is to be fast enough that people read its result.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: typecheck
+        run: bunx tsc --noEmit
+      - name: build
+        run: bun run build
