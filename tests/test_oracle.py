@@ -113,6 +113,14 @@ GREEKS = ("delta", "gamma", "vega", "theta", "rho")
 """The five the Oracle ships and #26 grades. Vanna, volga and charm are in the file and
 are deliberately not asserted - nothing in v1 computes them."""
 
+DISCOUNTED = ("delta", "gamma")
+"""The two whose convention this engine does not share with the Oracle (#53).
+
+The Black-76 price is `D[F N(d1) - K N(d2)]`, so every derivative of it inherits the D.
+The file reports `N(d1)`; we report `D N(d1)`. `docs/calculations.md` left the choice to
+#27 and #53 settled it: a delta of exactly 1 would mean an undiscounted payoff, and this
+payoff is discounted."""
+
 TOLERANCE = 1e-6
 """#26's figure. The measured drift is orders of magnitude below it, so this is a
 tripwire for a changed model rather than a tuned threshold."""
@@ -127,16 +135,24 @@ def drift_against_the_oracle(oracle: pd.DataFrame) -> dict[str, float]:
     worst = dict.fromkeys(GREEKS, 0.0)
     for option_type in ("CE", "PE"):
         rows = oracle[oracle.option_type == option_type]
+        discount = rows.discount.to_numpy()
         mine = black76_greeks(
             rows.forward.to_numpy(),
             rows.strike.to_numpy(),
             rows.dte_days.to_numpy() / TRADING_DAYS_PER_YEAR,
             rows.iv.to_numpy(),
-            rows.discount.to_numpy(),
+            discount,
             is_call=option_type == "CE",
         )
         for greek in GREEKS:
-            worst[greek] = max(worst[greek], float(np.abs(mine[greek] - rows[greek]).max()))
+            # Delta and gamma are DISCOUNTED here and undiscounted in the file (#53), so
+            # the Oracle is scaled up to this convention rather than ours scaled down to
+            # it. The gap is exactly D - it reaches 1.77%, which is large enough to
+            # matter and small enough to read as rounding.
+            theirs = rows[greek].to_numpy()
+            if greek in DISCOUNTED:
+                theirs = theirs * discount
+            worst[greek] = max(worst[greek], float(np.abs(mine[greek] - theirs).max()))
     return worst
 
 

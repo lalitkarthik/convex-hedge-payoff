@@ -52,6 +52,10 @@ class ForwardFit:
 
     forward: float
     discount: float
+    T: float
+    """Years to Expiry on the trading-day clock, carried rather than recomputed: the fit
+    already needed it, and the Greeks need the same one (#53)."""
+
 
     method: str
     """`parity_fit`, `single_strike_parity` or `spot`. A forward that was assumed must not
@@ -88,7 +92,7 @@ def fit_forward(strikes, calls, puts, quoted_strikes, *, T, spot) -> ForwardFit:
         # comparison. A discount above 1 is being paid to wait, which the slope allows
         # and the market does not.
         if 0.0 < discount <= 1.0 and 0.0 < -np.log(discount) / T < MAX_RATE:
-            return ForwardFit(float(intercept / discount), discount, "parity_fit", pairs)
+            return ForwardFit(float(intercept / discount), discount, T, "parity_fit", pairs)
 
     discount = float(np.exp(-FALLBACK_RATE * T))
 
@@ -98,6 +102,6 @@ def fit_forward(strikes, calls, puts, quoted_strikes, *, T, spot) -> ForwardFit:
         if paired_here.size:
             at = int(paired_here[0])
             forward = nearest + (calls[at] - puts[at]) / discount
-            return ForwardFit(float(forward), discount, "single_strike_parity", pairs)
+            return ForwardFit(float(forward), discount, T, "single_strike_parity", pairs)
 
-    return ForwardFit(float(spot), discount, "spot", pairs)
+    return ForwardFit(float(spot), discount, T, "spot", pairs)

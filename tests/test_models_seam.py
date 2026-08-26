@@ -20,6 +20,7 @@ from payoff.models import (
     AnalysisResponse,
     Curve,
     Leg,
+    LegGreeks,
     LegRequest,
     Metrics,
 )
@@ -177,9 +178,12 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
     that is one point short does not raise - it draws, slightly wrong. So the type will
     not hold a ragged one.
     """
+    exposure = LegGreeks(delta=0.5121, gamma=0.0002, vega=19.87, theta=-8.34, rho=4.12)
     response = AnalysisResponse(
         moment="2026-01-27T06:30:00",
         spot=25100.25,
+        forward=25219.12,
+        discount=0.993480,
         curve=Curve(spot=[24000.0, 25200.0, 26000.0], pnl_at_expiry=[-344.05, -344.05, 455.95]),
         metrics=Metrics(
             max_profit=None,
@@ -188,9 +192,20 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
             net_premium=344.05,
             reward_risk=None,
         ),
+        greeks=[exposure],
+        total_greeks=exposure,
     )
-    assert {"curve", "metrics"} <= set(response.model_dump())
+    assert {"curve", "metrics", "greeks", "total_greeks"} <= set(response.model_dump())
     assert len(response.curve.spot) == len(response.curve.pnl_at_expiry)
+
+    # The Forward is published beside the Greeks because a delta is a slope against
+    # something, and that something is not spot: the two differ by 118.87 here (#51).
+    assert response.forward - response.spot == pytest.approx(118.87, abs=0.01)
+
+    # A Greek is a Finite like every other number on the wire - ADR-0001 bans NaN on it
+    # as firmly as it bans one in a metric.
+    with pytest.raises(ValidationError):
+        LegGreeks(delta=float("nan"), gamma=0.0, vega=0.0, theta=0.0, rho=0.0)
 
     with pytest.raises(ValidationError):
         Curve(spot=[24000.0, 25200.0], pnl_at_expiry=[-344.05])

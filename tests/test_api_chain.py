@@ -253,3 +253,41 @@ def test_every_strike_in_the_chain_carries_a_volatility(client):
         for row in rows:
             assert row["iv"] is not None, f"{row['strike']:.0f} at {moment}"
             assert 0.0 < row["iv"] < 1.0, "a decimal, never a percentage"
+
+
+def test_a_call_and_its_put_at_one_strike_have_deltas_exactly_the_discount_apart(chain):
+    """#53, and the sharpest available test that delta is **computed** rather than read.
+
+    Put-call parity differentiated: `d[D(F - K)]/dF = D`, so at one strike the call's
+    delta minus the put's is exactly the Discount Factor. The Oracle's columns are
+    **undiscounted** and would put exactly 1.0 here. At this minute D is 0.993480, so the
+    two conventions differ by 0.65% - large enough to matter, small enough to read as
+    rounding, and invisible to any assertion that only checks a delta looks plausible.
+
+    That the difference is exact is what says both sides were priced in one place, at one
+    forward, from the strike's one shared volatility. Served as-of the two quotes can be
+    minutes apart, but a delta is a property of the model at the moment being asked
+    about, not of when the last print happened to land.
+    """
+    both_sided = [row for row in chain["rows"] if row["call"] and row["put"]]
+    assert len(both_sided) > 30, "the as-of view is what makes this many strikes two-sided"
+
+    for row in both_sided:
+        gap = row["call"]["delta"] - row["put"]["delta"]
+        assert gap == pytest.approx(chain["discount"], abs=1e-12), row["strike"]
+        assert gap != pytest.approx(1.0, abs=1e-4), "1.0 would mean an undiscounted delta"
+
+
+def test_the_deltas_stay_inside_the_bounds_the_discount_sets(chain):
+    """A call's delta lives in `[0, D]` and a put's in `[-D, 0]` - not `[0, 1]`.
+
+    The bound *is* the convention (`docs/calculations.md` section 5), so it is worth
+    asserting on every row rather than spot-checking: an undiscounted delta escapes it
+    only at the deepest strikes, which is exactly where nobody looks.
+    """
+    discount = chain["discount"]
+    for row in chain["rows"]:
+        if row["call"]:
+            assert 0.0 <= row["call"]["delta"] <= discount, row["strike"]
+        if row["put"]:
+            assert -discount <= row["put"]["delta"] <= 0.0, row["strike"]

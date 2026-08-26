@@ -15,7 +15,8 @@ Lot Size is applied **here, at the presentation boundary** - never stored on a L
 
 import numpy as np
 
-from payoff.models import Curve, Leg, Metrics
+from payoff import pricing
+from payoff.models import Curve, Leg, LegGreeks, Metrics
 
 CURVE_POINTS = 400
 """#24 asks for at least 200. 400 is the width the vectorisation was measured at."""
@@ -133,4 +134,43 @@ def metrics(legs: list[Leg]) -> Metrics:
         breakevens=breakevens(legs),
         net_premium=net_premium(legs),
         reward_risk=reward_risk,
+    )
+
+
+def leg_greeks(legs: list[Leg], forward: float, discount: float, T: float) -> list[LegGreeks]:
+    """Each Leg's exposures, signed by its Direction and scaled by its Quantity (#27).
+
+    Priced on the **forward**, never on a spot: no `S -> F` conversion appears here,
+    which is what lets #13 stay open. Everything not named as the perturbation is held -
+    in particular each Leg keeps its own strike's volatility, so a spread's two Legs are
+    priced at the two volatilities the smile actually quotes rather than at one average.
+
+    Per contract. The Lot Size multiplier is #29's and lives above this line.
+    """
+    rows = []
+    for leg in legs:
+        greeks = pricing.black76_greeks(
+            forward, leg.strike, T, leg.iv, discount, is_call=leg.option_type == "CE"
+        )
+        scale = leg.direction * leg.quantity
+        rows.append(
+            LegGreeks(**{name: scale * float(greeks[name]) for name in LegGreeks.model_fields})
+        )
+    return rows
+
+
+def total_greeks(rows: list[LegGreeks]) -> LegGreeks | None:
+    """`G = sum_i d_i q_i g_i` - the signing already happened, so this only adds up.
+
+    No branching on Leg count and none on Strategy name (#23 story 45): a Strategy is an
+    ordered list of Legs, so its exposure is the sum of theirs and adding a Preset adds
+    no code here.
+    """
+    if not rows:
+        return None
+    return LegGreeks(
+        **{
+            name: sum(getattr(row, name) for row in rows)
+            for name in LegGreeks.model_fields
+        }
     )

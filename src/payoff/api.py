@@ -30,12 +30,19 @@ def analyse(request: AnalysisRequest) -> AnalysisResponse:
     """Everything about one Strategy, as-of one moment, in one response."""
     legs = chain.resolve_legs(request.legs, request.moment)
     spot = chain.spot_at(request.moment)
+    fit = chain.forward_at(request.moment)
+
+    rows = strategy.leg_greeks(legs, fit.forward, fit.discount, fit.T)
 
     return AnalysisResponse(
         moment=request.moment,
         spot=spot,
+        forward=fit.forward,
+        discount=fit.discount,
         curve=strategy.curve(legs, spot),
         metrics=strategy.metrics(legs),
+        greeks=rows,
+        total_greeks=strategy.total_greeks(rows),
     )
 
 

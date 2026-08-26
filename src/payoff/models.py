@@ -140,6 +140,37 @@ class Curve(BaseModel):
         return self
 
 
+class LegGreeks(BaseModel):
+    """One Leg's exposures, or a whole Strategy's - the shape is the same either way.
+
+    **Per contract**: no Lot Size and no number of lots. Those are presentation
+    multipliers (#29) and a Greek that carried them could not be compared against
+    another Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because
+    that is what a per-Leg exposure row means to whoever reads it beside the Legs.
+
+    Conventions are stated once, in `pricing.black76_greeks`, and two of them surprise:
+    **delta and gamma carry the discount factor** (#53), and **theta is a one-session
+    repricing** rather than the analytic derivative.
+    """
+
+    delta: Finite
+    """Rupees per point of **forward**, never of spot. Bounded by `[0, D]` for a call and
+    `[-D, 0]` for a put - a delta of exactly 1 would mean an undiscounted payoff."""
+
+    gamma: Finite
+    """Delta per point. Two orders of magnitude smaller than the rest at this expiry."""
+
+    vega: Finite
+    """Per volatility **point** - a 1% move, not a move from 0.16 to 1.16."""
+
+    theta: Finite
+    """Per trading **session**, already scaled: do not divide by 252 again. Negative for a
+    long option, and bounded by the premium, which the analytic form is not."""
+
+    rho: Finite
+    """Per one percent."""
+
+
 class AnalysisResponse(BaseModel):
     """Everything about one Strategy, in one response.
 
@@ -153,8 +184,24 @@ class AnalysisResponse(BaseModel):
     spot: Finite
     """The NIFTY level at the moment - what the header shows and the x-axis measures."""
 
+    forward: Finite
+    """The Forward the Greeks were priced at, fitted from the quotes (#51). Published
+    because a delta is meaningless without the underlying it is a slope against, and the
+    basis reaches +118.87 - the number is not spot."""
+
+    discount: Finite
+    """The Discount Factor from the same fit. Delta and gamma carry it (#53)."""
+
     curve: Curve
     metrics: Metrics
+
+    greeks: list[LegGreeks] = []
+    """One row per Leg, in the order the Legs were sent - the Greeks table is read
+    beside them on screen (#27)."""
+
+    total_greeks: LegGreeks | None = None
+    """The Strategy's exposure: `G = sum_i d_i q_i g_i`, with no branching on Leg count
+    and none on Strategy name. `None` only when there are no Legs to sum."""
 
 
 class ChainQuote(BaseModel):

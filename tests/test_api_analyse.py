@@ -187,3 +187,89 @@ def test_an_entry_premium_override_moves_the_breakevens(client):
     ).json()["metrics"]
     assert overridden["breakevens"] == pytest.approx([25300.0], abs=1e-6), "25200 + 100"
     assert overridden["net_premium"] == pytest.approx(100.0, abs=1e-6)
+
+
+GREEKS = ("delta", "gamma", "vega", "theta", "rho")
+
+
+def test_the_greeks_come_back_with_the_curve_and_not_from_a_second_call(client):
+    """#27, and #53's convention.
+
+    `models.py` already records the intent - "#27 and #29 add the Greeks and the Payoff
+    Table to this same response rather than to endpoints of their own" - so the test that
+    matters is that one POST carries both. A trader who has to wait for a second request
+    watches the exposures arrive after the chart they belong to.
+
+    Published per **contract**: no lot size, no number of lots. #29 owns that multiplier,
+    and keeping it out of here is what lets a Greek and a currency figure scale
+    differently without either one branching.
+
+    **Delta is discounted** (#53), which is why the bound below is `D` and not 1. At this
+    minute D is 0.993480, so a bought at-the-money call cannot report more than that. An
+    undiscounted convention would sit just above it - a difference of 1.26% on this day,
+    large enough to matter and small enough to read as rounding.
+    """
+    response = analyse(client, [{"strike": STRIKE, "option_type": "CE", "direction": 1}])
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["forward"] == pytest.approx(25219.12, abs=0.01), "what they were priced at"
+    assert body["discount"] == pytest.approx(0.993480, abs=1e-6)
+
+    assert len(body["greeks"]) == 1, "one row per leg, in the order they were sent"
+    leg = body["greeks"][0]
+    assert set(leg) == set(GREEKS)
+
+    assert 0.0 < leg["delta"] < body["discount"], "a call's delta is bounded by D, not by 1"
+    assert leg["gamma"] > 0.0, "long options are gamma-positive, call or put alike"
+    assert leg["vega"] > 0.0
+    assert leg["theta"] < 0.0, "a bought option loses value as a session passes"
+
+    assert body["total_greeks"] == leg, "one leg, so the total is that leg"
+
+
+def test_selling_a_leg_negates_every_greek_it_reports(client):
+    """#53: "a short leg reports the negated Greek of the equivalent long leg".
+
+    The aggregation is `G = sum_i d_i q_i g_i` - direction and quantity multiply in, with
+    no branching on leg count and none on Strategy name. This is the cheapest test of
+    that: the same contract, the other way round.
+
+    Asserted exactly rather than approximately. The two differ by a sign applied to one
+    float, so anything other than exact negation means a second calculation crept in.
+    """
+    long = analyse(client, [{"strike": STRIKE, "option_type": "PE", "direction": 1}]).json()
+    short = analyse(client, [{"strike": STRIKE, "option_type": "PE", "direction": -1}]).json()
+
+    for greek in GREEKS:
+        assert short["greeks"][0][greek] == -long["greeks"][0][greek], greek
+
+
+def test_the_total_is_the_sum_of_the_legs_and_a_straddle_is_delta_flat(client):
+    """A short straddle at the money: the two deltas very nearly cancel.
+
+    Not exactly - the money is the strike nearest the **forward** (25,200 against a
+    forward of 25,219.12), so the call is a shade in the money and the put a shade out,
+    and the residual is real rather than an error. Asserting it is zero would be
+    asserting a coincidence.
+
+    What is exact is that the total is the sum: a Strategy's exposure is a property of
+    its Legs and nothing else.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+        ],
+    ).json()
+
+    assert len(body["greeks"]) == 2
+    for greek in GREEKS:
+        assert body["total_greeks"][greek] == pytest.approx(
+            sum(leg[greek] for leg in body["greeks"]), abs=1e-12
+        ), greek
+
+    assert abs(body["total_greeks"]["delta"]) < 0.05, "sold straddle: nearly delta flat"
+    assert body["total_greeks"]["gamma"] < 0.0, "and short gamma, which is the risk in it"
+    assert body["total_greeks"]["theta"] > 0.0, "the compensation for carrying it"

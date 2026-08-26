@@ -603,6 +603,33 @@ $D\,N(d_1)$: the premium is paid today and the payoff arrives at expiry, so a po
 worth a discounted point now. Dropping the $D$ is what the benchmark ships, and the two numbers
 are one multiplication apart.
 
+**Which of the two we publish was left open here and is now settled: discounted** (#53). The
+engine reports $D\,N(d_1)$ on the wire and `tests/test_oracle.py` scales the benchmark's two
+columns **up** to that convention rather than scaling ours down to theirs. Residuals across all
+23,581 rows of the session, once the $D$ is accounted for:
+
+| | residual |
+|---|---|
+| $\Delta$ | $2.2 \times 10^{-16}$ |
+| $\Gamma$ | $2.2 \times 10^{-19}$ |
+| $\nu$ | $1.4 \times 10^{-14}$ |
+| $\Theta$ | $1.1 \times 10^{-11}$ |
+| $\rho$ | $5.3 \times 10^{-15}$ |
+
+**The size of the gap is the argument for caring.** $D$ runs from 0.982269 to 1.000000 across the
+full benchmark, so an undiscounted $\Delta$ is up to **1.77%** away from a discounted one — large
+enough to move a hedge and small enough to read as rounding. Nothing raises, nothing renders
+oddly, and the two are indistinguishable by inspection. The bound is what gives it away: a
+$\Delta$ of exactly 1 is undiscounted, and a discounted one cannot exceed $D$.
+
+The cheapest check that both sides were priced in one place is parity differentiated. Since
+$\partial\bigl[D(\hat F - K)\bigr]/\partial \hat F = D$, the call's $\Delta$ minus the put's at
+one strike is **exactly** $D$ — 0.993479983987 at the snapshot, on every both-sided strike. Read
+from the file's columns instead, that difference comes out at **1.0191** on the 23,500 strike,
+because served as-of the two sides were last printed in different minutes and priced against
+different forwards. Computing both here, at one moment's forward and the strike's one shared
+$\sigma$, is what makes the identity hold.
+
 $\Theta$ is the exception to the pattern, and it is deliberate. It is not $\partial V/\partial t$
 but what the contract is worth after one session — the number a trader reads $\Theta$ as, what the
 benchmark ships, and the form that survives the measurement below.
