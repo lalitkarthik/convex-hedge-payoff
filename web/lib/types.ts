@@ -50,8 +50,12 @@ export interface ChainQuote {
   volume: number;
   /** How stale this print is. Reaches 153 at the wings, so it has to be visible. */
   age_minutes: number;
-  /** Per side, and genuinely so: a call and its put have deltas one apart, not equal. */
-  delta: number;
+  /**
+   * Per side, and genuinely so: a call and its put have deltas one apart, not equal.
+   * Null together with the row's `iv`: a delta is priced at the strike's volatility, so
+   * a print no volatility reproduces has no delta to publish either.
+   */
+  delta: number | null;
 }
 
 export interface ChainRow {

@@ -39,7 +39,16 @@ import polars as pl
 PART_GLOB = "**/*.parquet"
 
 CHAIN = "chain"
-"""The one dataset that exists today. #64 adds a summary, a payoff and a manifest."""
+"""The Chain: one row per minute, per strike, per side, with the carry-forward already
+applied (#67). Partitioned by asset, date and expiry. #64 adds a summary and a payoff."""
+
+MANIFEST = "manifest"
+"""Which Expiries pair with which dates (#67).
+
+**Unpartitioned**, and deliberately so: it is the index *over* the partitions, so keying
+it by the same keys would make it answerable only by whoever already knew the answer. One
+small file, read whole.
+"""
 
 DERIVATION_VERSION = "v1"
 """What the stored numbers were derived by, carried in every dataset root's name.

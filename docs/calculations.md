@@ -447,6 +447,33 @@ $\sigma_0 = 0.20$ is a constant fitted to one expiry in one market on one day. I
 it is not correct in general, and the fix when it comes is a **bisection fallback for rows Newton
 abandons, or a moneyness-aware seed** — not a different constant, which would only move the cliff.
 
+#### The fallback arrived with #67, and it was the near-expiry dates that brought it
+
+Widening the build from the anchor to all twenty-four dates walked the solver into the corner the
+paragraph above describes. On **10 February**, Expiry day, $T$ falls to $1/375/252 = 1.06	imes10^{-5}$
+years and vega with it: **9,419 of 34,002** invertible rows have a vega below `VEGA_FLOOR` at the flat
+seed, so Newton cannot take a first step at all. Not one of those prices sits at discounted intrinsic
+— a volatility exists for every one of them, and Newton simply cannot walk to it from 0.20.
+
+So `implied_vol` bisects those rows. The Black-76 price is monotone in $\sigma$, so the sign of the
+residual says which half of $[10^{-6}, 5]$ to keep and no derivative is consulted — which is the
+point, since the rows that get here are exactly the ones whose derivative has vanished. Sixty
+halvings put the answer below what float64 distinguishes.
+
+The fallback is entered **only where the Newton step was suppressed**, never where a row merely ran
+out of sweeps. That distinction is what keeps the iteration ceiling meaningful: a vega divided by 100
+makes every row *sluggish* rather than *collapsed*, so the test that catches that bug by passing a
+tight `max_sweeps` still catches it. A blanket "if Newton fails, bisect" would have quietly repaired
+the very bug the ceiling exists to expose.
+
+The volatilities it recovers reach **4.96**, which is not a runaway. What a price sees is
+$\sigma\sqrt{T}$, and at one minute to Expiry that is 0.016 — an ordinary number wearing an alarming
+annualisation.
+
+At the final bar $T$ is exactly **0**, the price stops depending on $\sigma$ altogether, and there is
+nothing to invert. Those rows carry no volatility rather than a fabricated one, which is what
+`ChainRow.iv` is nullable for.
+
 ### Verification
 
 Graded three ways at the 12:00 snapshot, 46 legs, all asserted in the notebook:

@@ -95,8 +95,15 @@
             "type": "integer"
           },
           "delta": {
-            "title": "Delta",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
           },
           "last": {
             "title": "Last",
@@ -115,8 +122,7 @@
           "last",
           "open_interest",
           "volume",
-          "age_minutes",
-          "delta"
+          "age_minutes"
         ],
         "title": "ChainQuote",
         "type": "object"
@@ -568,7 +574,7 @@
     },
     "/chain": {
       "get": {
-        "description": "The Chain as-of a moment: one row per strike, call and put either side.",
+        "description": "The Chain as-of a moment: one row per strike, call and put either side.\n\n`date` is the trading date, which is what the store is keyed by and what a link will\ncarry once there is a control that picks one (#68). Omitted, it is taken off the\nmoment: the session runs 03:45 to 10:00 UTC, so it never crosses a midnight and the\ntwo cannot disagree. Naming it is what makes the twenty-three days #67 built reachable\nwithout a client having to know that.",
         "operationId": "read_chain_chain_get",
         "parameters": [
           {
@@ -578,6 +584,22 @@
             "schema": {
               "title": "Moment",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
             }
           }
         ],

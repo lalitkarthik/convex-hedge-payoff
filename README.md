@@ -50,15 +50,22 @@ Two processes, and one build before them. The engine serves JSON; the frontend r
 proxies to it, so the browser only ever talks to its own origin and no cross-origin policy
 exists to misconfigure (#25).
 
-The engine **reads** the numbers it serves; it no longer solves them (#66). Deriving the day
-costs 1.4 s and the day cannot change, so it happens once, here, and lands in `Data/runtime/` -
-which is gitignored, being derived rather than authored. A fresh clone has to run this. The
-engine raises and names this command if the tree is missing, rather than quietly re-deriving
-and putting the 1.4 s back into the first request.
+The engine **reads** the numbers it serves; it no longer solves them (#66). Deriving a day
+costs about 1.4 s and the day cannot change, so it happens once, here, and lands in
+`Data/runtime/` - which is gitignored, being derived rather than authored. A fresh clone has to
+run this. The engine raises and names this command if the tree is missing, rather than quietly
+re-deriving and putting the cost back into the first request.
+
+Since #67 the build derives **every trading date in the dataset** - twenty-four of them,
+1,062,024 rows, about fifty seconds - and `/chain` takes a `date`. The test suite builds three
+of the twenty-four rather than all of them; `tests/conftest.py` says which and why.
 
 ```bash
-# once - derive the day the engine serves
+# once - derive every day the engine serves
 PYTHONPATH=src python scripts/build_runtime.py
+
+# or just the ones you need, while iterating
+PYTHONPATH=src python scripts/build_runtime.py --dates=2026-01-27,2026-02-10
 ```
 
 ```bash

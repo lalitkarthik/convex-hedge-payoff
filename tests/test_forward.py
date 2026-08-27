@@ -138,8 +138,8 @@ def test_the_derived_values_reproduce_the_source_columns(sample):
     """The grade. Both columns, every minute, to 1e-6.
 
     This is the only assertion in the tree that opens `forward` or `discount`. Everywhere
-    else they are absent by construction: `derive.load_chain()` drops them, so an engine
-    that tried to read one would raise rather than return a plausible wrong answer.
+    else they are absent by construction: since #67 the build reads the raw bars and never
+    this file, so there is no column for an engine to reach for by accident.
     """
     worst_forward = worst_discount = 0.0
     for moment in sorted(sample.ts.unique()):

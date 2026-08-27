@@ -227,10 +227,16 @@ class ChainQuote(BaseModel):
     """How stale this bar is, in whole minutes. A quote is never from the future, and
     bars are one minute wide. #31 dims on it; this is where it is emitted."""
 
-    delta: Finite
+    delta: Finite | None = None
     """Per side, and genuinely so: a call and its put at one strike have deltas one
     apart rather than equal. That is the opposite of implied volatility, and the two
-    are easy to conflate."""
+    are easy to conflate.
+
+    Nullable for the same reason `ChainRow.iv` is, and always together with it: a delta
+    is priced at the strike's implied volatility, so a print that no volatility
+    reproduces has no delta either. Fabricating one would be worse than admitting it -
+    it is a number a trader would size a position against. Rare, and only away from the
+    anchor: 2 of 7 January's 244 bars and 58 of 10 February's 45,330."""
 
 
 class ChainRow(BaseModel):
@@ -265,9 +271,9 @@ class ChainResponse(BaseModel):
     """The Forward this moment implies, fitted from the quotes themselves (#51).
 
     Not read from the source file. `CONTEXT.md:138` - the engine that reads the Oracle
-    to produce an answer has lost the point of the project - so `derive.load_chain()`
-    drops the column outright and this number is recovered from put-call parity instead,
-    in the build that writes the store (#66)."""
+    to produce an answer has lost the point of the project - so the build never opens the
+    file that carries it, and this number is recovered from put-call parity instead, in
+    the build that writes the store (#66, #67)."""
 
     discount: Finite
     """The Discount Factor for the same moment, recovered alongside the Forward from the

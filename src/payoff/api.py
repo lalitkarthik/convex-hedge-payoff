@@ -77,9 +77,16 @@ def read_session() -> SessionResponse:
 
 
 @app.get("/chain", response_model=ChainResponse)
-def read_chain(moment: str) -> ChainResponse:
-    """The Chain as-of a moment: one row per strike, call and put either side."""
-    return chain.as_of_view(moment)
+def read_chain(moment: str, date: str | None = None) -> ChainResponse:
+    """The Chain as-of a moment: one row per strike, call and put either side.
+
+    `date` is the trading date, which is what the store is keyed by and what a link will
+    carry once there is a control that picks one (#68). Omitted, it is taken off the
+    moment: the session runs 03:45 to 10:00 UTC, so it never crosses a midnight and the
+    two cannot disagree. Naming it is what makes the twenty-three days #67 built reachable
+    without a client having to know that.
+    """
+    return chain.as_of_view(moment, date)
 
 
 @app.get("/presets", response_model=PresetResponse)

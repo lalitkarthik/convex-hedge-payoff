@@ -1,8 +1,9 @@
 """Implied volatility, solved rather than read (#52).
 
 `docs/calculations.md` section 4. The sample file carries an `iv` column and the engine
-must not read it: `derive.load_chain()` drops it, and this file is the **only** place in
-the tree where it is opened, on the right-hand side of a comparison.
+must not read it: since #67 the build does not open the file at all, and this is one of
+the few places in the tree where the column is read, on the right-hand side of a
+comparison.
 
 Two seams, and the split matters. `pricing.implied_vol` is the maths - it receives
 arrays and returns numbers, and is tested the way `test_oracle.py` tests the rest of
