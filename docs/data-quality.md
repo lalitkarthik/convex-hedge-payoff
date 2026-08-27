@@ -113,7 +113,7 @@ which taught the engine to recover them from put-call parity (`docs/calculations
 the distinction carefully, because it is easy to overstate: a forward and a discount factor are
 still exactly what the pricing core wants as **arguments**, per ADR-0001. What changed is where
 they may come from. Sourcing them from this file is now the thing that is banned, and
-`chain.load_chain()` drops both columns at load so it cannot happen by accident. They are opened
+`derive.load_chain()` drops both columns at load so it cannot happen by accident. They are opened
 in `tests/test_forward.py` and nowhere else.
 
 **Market observables** — real prices, used to solve IV and to check repricing:
@@ -123,7 +123,7 @@ in `tests/test_forward.py` and nowhere else.
 `iv` used to sit awkwardly between the groups, listed as a model input on the grounds that it is what
 the Greeks are tested against. [#52](https://github.com/lalitkarthik/convex-hedge-payoff/issues/52)
 settled it: **`iv` is not an input.** It is a solved quantity, the engine solves it from `last`
-(`docs/calculations.md` §4), and `chain.load_chain()` drops the column alongside `forward` and
+(`docs/calculations.md` §4), and `derive.load_chain()` drops the column alongside `forward` and
 `discount` so it cannot be read by accident. It is opened in `tests/test_implied_vol.py` and
 nowhere else in the tree.
 

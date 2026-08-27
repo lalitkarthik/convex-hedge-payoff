@@ -264,9 +264,10 @@ class ChainResponse(BaseModel):
     forward: Finite
     """The Forward this moment implies, fitted from the quotes themselves (#51).
 
-    Not read from the file. `CONTEXT.md:138` - the engine that reads the Oracle to
-    produce an answer has lost the point of the project - so `chain.load_chain()` drops
-    the column outright and this number is recovered from put-call parity instead."""
+    Not read from the source file. `CONTEXT.md:138` - the engine that reads the Oracle
+    to produce an answer has lost the point of the project - so `derive.load_chain()`
+    drops the column outright and this number is recovered from put-call parity instead,
+    in the build that writes the store (#66)."""
 
     discount: Finite
     """The Discount Factor for the same moment, recovered alongside the Forward from the

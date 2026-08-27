@@ -6,13 +6,13 @@ process that redoes that at every start redoes it for nothing, because the day i
 immutable. So it happens here, once, and the API only reads.
 
     Data/sample/chain_2026-01-27.parquet          the committed seed
-      -> chain.load_chain()                       drops forward, discount, iv
-      -> chain.forward_at / solved_volatility     derives them back
+      -> derive.load_chain()                      drops forward, discount, iv
+      -> derive.forward_at / solved_volatility    derives them back
       -> Data/runtime/chain_v1/asset=.../date=.../expiry=.../part-0.parquet
 
 **Which direction the Oracle flows matters.** This script reads the committed sample and
-`load_chain()` drops the graded columns before anything here can see them, so what lands
-in the runtime tree is the engine's own answer. Nothing downstream reads
+`derive.load_chain()` drops the graded columns before anything here can see them, so what
+lands in the runtime tree is the engine's own answer. Nothing downstream reads
 `Data/greeks.parquet`; it stays a test fixture. CONTEXT.md:138.
 
 The written columns follow `Data/greeks.parquet`'s own names and Arrow types, so the two
@@ -37,7 +37,7 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from payoff import chain, store  # noqa: E402  - after the path is set
+from payoff import derive, store  # noqa: E402  - after the path is set
 
 ASSET = "NIFTY"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "Data" / "runtime"
@@ -74,8 +74,8 @@ that looks derived is the ambiguity ADR-0001's NaN ban exists to prevent.
 
 def runtime_frame() -> pl.DataFrame:
     """The day, derived, in the order and types `SCHEMA` names."""
-    quotes = chain.solved_chain()
-    fits = {stamp: chain.forward_at(stamp) for stamp in quotes.ts.unique()}
+    quotes = derive.solved_chain()
+    fits = {stamp: derive.forward_at(stamp) for stamp in quotes.ts.unique()}
 
     frame = pl.DataFrame(
         {
@@ -101,10 +101,11 @@ def runtime_frame() -> pl.DataFrame:
 def expiry_date() -> str:
     """The expiry as an ISO date, for the partition key.
 
-    The chain names it '10FEB26' on the Ticker; a path key wants something sortable, and
+    The seed names it '10FEB26' on the Ticker; a path key wants something sortable, and
     Polars parses `expiry=2026-02-10` back as a Date rather than a string.
+    `chain.expiry_label()` formats it back to '10FEB26' for the header.
     """
-    label = chain.expiry_label()
+    label = derive.expiry_label()
     return str(pl.Series([label]).str.to_date("%d%b%y").item())
 
 

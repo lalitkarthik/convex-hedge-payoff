@@ -138,7 +138,7 @@ def test_the_derived_values_reproduce_the_source_columns(sample):
     """The grade. Both columns, every minute, to 1e-6.
 
     This is the only assertion in the tree that opens `forward` or `discount`. Everywhere
-    else they are absent by construction: `chain.load_chain()` drops them, so an engine
+    else they are absent by construction: `derive.load_chain()` drops them, so an engine
     that tried to read one would raise rather than return a plausible wrong answer.
     """
     worst_forward = worst_discount = 0.0

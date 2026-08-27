@@ -22,7 +22,7 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 
-from payoff import store
+from payoff import chain, store
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_runtime  # noqa: E402  - scripts/ is not a package
@@ -208,3 +208,26 @@ def test_every_minute_carries_the_method_that_produced_its_forward(built):
         "single_strike_parity": 50,
         "spot": 10,
     }
+
+
+def test_a_missing_tree_stops_the_reader_rather_than_re_deriving(tmp_path, monkeypatch):
+    """#66's other half: the serving path reads the store, and *only* the store.
+
+    `Data/runtime/` is gitignored - it is derived, not authored - so the tree is genuinely
+    absent in a fresh clone, and the tempting fix is a fallback that re-derives from the
+    committed sample when it cannot be found. That fallback would be worse than the bug it
+    hides: it puts the 1.4 s back into the first request, which is the whole cost #64
+    exists to remove, and it makes a misconfigured `PAYOFF_RUNTIME` look like a working
+    deployment serving slightly slower.
+
+    So the reader raises, and the message names the command that fixes it. Asserted here
+    because no HTTP test can be: a fallback would serve byte-identical responses, which is
+    exactly the property that would let it survive review.
+    """
+    monkeypatch.setattr(store, "runtime_root", lambda: tmp_path)
+    chain.chain_scan.cache_clear()
+    try:
+        with pytest.raises(chain.MissingRuntimeTree, match="build_runtime"):
+            chain.chain_scan()
+    finally:
+        chain.chain_scan.cache_clear()

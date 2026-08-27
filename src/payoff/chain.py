@@ -1,10 +1,20 @@
 """Chain loading and the as-of view.
 
-Runtime data is **one derived file loaded into memory at boot** - not the three raw
-files, and not a database (#23). The file is `Data/sample/chain_2026-01-27.parquet`,
-which is already the product of the IST/UTC join documented in `docs/data-quality.md`.
-Widening it beyond one day is a matter of regenerating that file; nothing in this
-module's interface changes.
+Runtime data is the **partitioned store**, read through `store.scan` (#66) - not one
+derived file loaded into memory at boot, and not a database (#23). What was a
+`pd.read_parquet` at import time is now a `pl.LazyFrame`: a query plan, not rows. Every
+function below composes its filter and its projection onto that plan and collects only
+what it asked for, so an as-of query at 12:00 reads neither the afternoon's row groups
+nor the columns it did not name.
+
+**Nothing here solves any more.** The Forward, the Discount Factor and the volatility are
+read off the row `scripts/build_runtime.py` wrote; deriving them is `derive.py`'s job and
+it happens once, in the build. That is the 1.4 s this module used to pay on the first
+request of every process, for a day that had already happened and could not change.
+
+Delta is the exception, and deliberately so: it is **computed on every request** (#53),
+because it is a property of the model at the moment being asked about rather than a fact
+about a print. It costs one vectorised Black-76 call over the ninety-odd strikes in view.
 
 **The Chain is served as-of.** Only strikes that actually traded in a given minute have
 a bar, so a strict reading of "the Chain at this moment" is much thinner than a trader
@@ -14,17 +24,31 @@ expects - the last known quote at or before the moment is what makes a usable ch
 The core never sees a Chain. A strike absent from it raises **here** (#23).
 """
 
+from datetime import date, datetime
 from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from payoff import forward as forward_maths
+from payoff import store
 from payoff.models import ChainQuote, ChainResponse, ChainRow, Leg, LegRequest
-from payoff.pricing import TRADING_DAYS_PER_YEAR, black76_greeks, implied_vol
+from payoff.pricing import TRADING_DAYS_PER_YEAR, black76_greeks
 
-RUNTIME_FILE = Path(__file__).resolve().parents[2] / "Data" / "sample" / "chain_2026-01-27.parquet"
+ANCHOR_DATE = date(2026, 1, 27)
+"""The one date the build writes and this module serves.
+
+A constant rather than a parameter because #66 is deliberately invisible: the store can
+already hold any number of days, `scripts/build_runtime.py` still derives exactly one, and
+no new day becomes reachable until #67 widens the build and #68 gives a client a way to
+ask for one. Until then this filter is what makes that promise structural rather than
+incidental - it reaches the parquet reader as a partition predicate, so a stray second
+day under the tree would be skipped rather than silently merged into this one.
+"""
+
+MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+"""Spelled out rather than left to `strftime('%b')`, which is locale-dependent: the Expiry
+label is asserted as `10FEB26` and a machine set to fr_FR would serve `10FÉVR.26`."""
 
 
 class StrikeNotQuoted(LookupError):
@@ -40,217 +64,172 @@ class StrikeNotQuoted(LookupError):
         super().__init__(f"{strike:.0f} {option_type} is not quoted at or before this moment")
 
 
-#: Solved upstream and shipped in the file. The engine derives every one of them itself -
-#: the forward and discount in #51, the volatility in #52, the Greeks in #53 - and is
-#: graded against these columns in `tests/test_forward.py`, `tests/test_implied_vol.py`
-#: and `tests/test_oracle.py`. They are dropped at load: an answer that cannot be read
-#: cannot be read by accident.
-#:
-#: `vanna`, `volga` and `charm` are dropped with the rest despite nothing deriving them.
-#: A column that survives the cull is a column something may quietly start serving.
-ORACLE_COLUMNS = (
-    "forward", "discount", "iv",
-    "delta", "gamma", "theta", "vega", "rho", "vanna", "volga", "charm",
-)
+class MissingRuntimeTree(RuntimeError):
+    """No derived data where the serving path was told to look.
+
+    Raised loudly, at the first read, rather than quietly re-deriving from the committed
+    sample. A fallback would put the 1.4 s back into the request path - the exact cost
+    #64 exists to remove - and it would hide a misconfigured deployment behind an answer
+    that looked right. `tests/conftest.py` runs the build for the suite; a deployment runs
+    it in its release step.
+    """
 
 
 @lru_cache(maxsize=1)
-def load_chain() -> pd.DataFrame:
-    """Load the runtime file once, at boot, and keep it for the process's lifetime."""
-    chain = pd.read_parquet(RUNTIME_FILE).sort_values("ts").reset_index(drop=True)
-    return chain.drop(columns=list(ORACLE_COLUMNS))
+def chain_scan() -> pl.LazyFrame:
+    """The lazy plan every read below is composed onto.
+
+    Cached because building the plan globs the tree, not because it holds rows - it holds
+    none. Collecting it twice reads the parquet twice, which is the point: the filter goes
+    to the reader rather than to a frame already in memory.
+    """
+    root = store.runtime_root()
+    dataset = store.dataset_root(root)
+    if not dataset.exists():
+        raise MissingRuntimeTree(
+            f"No derived chain at {dataset}. Run `python scripts/build_runtime.py` to "
+            "derive it from the committed sample, or point PAYOFF_RUNTIME at a tree that "
+            "has already been built."
+        )
+    return store.scan(root).filter(pl.col("date") == ANCHOR_DATE)
+
+
+def _at(moment: str | datetime) -> datetime:
+    """One spelling of a moment, whatever the caller handed in.
+
+    `2026-01-27 06:30:00` and `2026-01-27T06:30:00` both parse, which is what the wire
+    accepted before and what `moments()` has to keep echoing back unchanged.
+    """
+    return moment if isinstance(moment, datetime) else datetime.fromisoformat(str(moment))
 
 
 @lru_cache(maxsize=512)
-def strict_slice(moment: str | pd.Timestamp) -> pd.DataFrame:
+def strict_slice(moment: str | datetime) -> pl.DataFrame:
     """Every quote stamped at **one** minute - the latest minute at or before `moment`.
 
     The counterpart to `snapshot()`, and not a substitute for it. A chain is served
-    as-of because a strict reading of it is too thin to trade from; a *fit* is run
-    strictly because the as-of view mixes quote ages up to 153 minutes apart, and the
-    regression's slope is the Discount Factor. Stale prints would land in it directly.
+    as-of because a strict reading of it is too thin to trade from; the Forward, the
+    Discount Factor and the at-the-money strike are read strictly, because they are
+    facts about a minute rather than about a strike's last print.
     """
-    chain = load_chain()
-    stamps = chain.ts[chain.ts <= pd.Timestamp(moment)]
-    if stamps.empty:
+    rows = (
+        chain_scan()
+        .filter(pl.col("timestamp_utc") <= _at(moment))
+        .filter(pl.col("timestamp_utc") == pl.col("timestamp_utc").max())
+        .collect()
+    )
+    if rows.is_empty():
         raise StrikeNotQuoted(0.0, "--")
-    return chain[chain.ts == stamps.iloc[-1]]
+    return rows
 
 
-def paired_quotes(rows: pd.DataFrame) -> pd.DataFrame:
-    """One row per strike quoting **both** sides, with the two prices beside each other.
+def paired_strikes(rows: pl.DataFrame) -> np.ndarray:
+    """The strikes quoting **both** sides in one minute, sorted.
 
     Parity is an identity about a call and its put at one strike, so a strike quoting
-    only one side has nothing to say and is dropped rather than half-used.
-
-    An intersection rather than a `pivot_table`, which produced the same frame on all
-    376 minutes and cost 4.7 ms of pandas overhead each time to reshape 58 rows. #52
-    calls this for every minute of the day at once, which turned that into 1.8 seconds;
-    every `/chain` request was already paying one of them.
+    only one side has nothing to say and is dropped rather than half-used. This is the
+    same set `derive.paired_quotes` fits the regression over, which is why the count it
+    returns is the `pairs` a stored fit can be reconstructed with.
     """
-    calls = rows[rows.option_type == "CE"]
-    puts = rows[rows.option_type == "PE"]
-    shared, call_at, put_at = np.intersect1d(
-        calls.strike.to_numpy(float), puts.strike.to_numpy(float), return_indices=True
-    )
-    return pd.DataFrame(
-        {"CE": calls["last"].to_numpy(float)[call_at], "PE": puts["last"].to_numpy(float)[put_at]},
-        index=pd.Index(shared, name="strike"),
-    )
+    calls = rows.filter(pl.col("option_type") == "CE")["strike"].to_numpy()
+    puts = rows.filter(pl.col("option_type") == "PE")["strike"].to_numpy()
+    return np.intersect1d(calls, puts)
 
 
 @lru_cache(maxsize=512)
-def forward_at(moment: str | pd.Timestamp) -> forward_maths.ForwardFit:
-    """The Forward and Discount Factor this moment implies (#51).
+def forward_at(moment: str | datetime) -> forward_maths.ForwardFit:
+    """The Forward and Discount Factor this moment implies (#51) - **read, not fitted**.
 
-    Slices the minute and hands `forward.fit_forward` arrays; the maths never sees a
-    chain. The result names the tier that produced it, because on 60 of this day's 376
-    minutes the regression cannot be trusted and the answer is assumed rather than
-    measured.
+    The regression ran in the build, once per minute, and its answer is on every row of
+    that minute along with the tier that produced it. Reading it back is not a shortcut
+    past #51: the number is the engine's own, and `build_runtime.py --check` re-derives
+    the whole day and compares, so a tree written by older code is caught rather than
+    served.
+
+    `pairs` is the one field of the fit the store does not carry, and it is recovered
+    rather than invented - it is the size of the both-sided set, which is in the minute.
     """
     rows = strict_slice(moment)
-    paired = paired_quotes(rows)
-    return forward_maths.fit_forward(
-        strikes=paired.index.to_numpy(float),
-        calls=paired.CE.to_numpy(float),
-        puts=paired.PE.to_numpy(float),
-        quoted_strikes=rows.strike.unique(),
-        T=float(rows.dte_days.iloc[0]) / TRADING_DAYS_PER_YEAR,
-        spot=float(rows.spot.iloc[0]),
+    return forward_maths.ForwardFit(
+        forward=float(rows["forward"][0]),
+        discount=float(rows["discount"][0]),
+        T=float(rows["dte_days"][0]) / TRADING_DAYS_PER_YEAR,
+        method=str(rows["forward_method"][0]),
+        pairs=int(paired_strikes(rows).size),
     )
 
 
-@lru_cache(maxsize=1)
-def solved_volatility() -> pd.Series:
-    """One volatility per strike per minute, solved rather than read (#52).
-
-    Indexed by `(ts, strike)` and **not** by side, because that is what an implied
-    volatility is here: the source carries one number per strike and hands it to both
-    legs, which is why the interface shows a single centred column rather than two.
-
-    Which leg is inverted follows `docs/calculations.md` section 4 and the measurement
-    behind it:
-
-    - the **out-of-the-money** leg - the call when `K >= F_hat`, the put when `K < F_hat`
-      - because the in-the-money print is the stale one;
-    - failing that, whichever leg *is* quoted. On 392 strike-minutes only the in-the-money
-      side printed, and the source solves those from that print rather than leaving them
-      blank. Skipping them would blank the strike for every later moment too, since the
-      chain is served as-of.
-
-    **Each quote is inverted in its own minute**, against that minute's forward and
-    discount, never against the requested moment's. Served as-of, a print can be 153
-    minutes older than the forward beside it in the response; inverting it against a
-    forward that has moved a hundred points since measures the drift, not the volatility.
-
-    Solved for the whole day at once, on first use. It costs 29.5 ms - one vectorised
-    Newton sweep set over 18,994 rows - which is cheaper than the caching a per-moment
-    solve would need in order to avoid it.
-    """
-    chain = load_chain()
-    fits = {stamp: forward_at(stamp) for stamp in chain.ts.unique()}
-    forward = chain.ts.map(lambda stamp: fits[stamp].forward).to_numpy(float)
-    discount = chain.ts.map(lambda stamp: fits[stamp].discount).to_numpy(float)
-    strike = chain.strike.to_numpy(float)
-    is_call = (chain.option_type == "CE").to_numpy()
-    T = chain.dte_days.to_numpy(float) / TRADING_DAYS_PER_YEAR
-
-    out_of_money = np.where(is_call, strike >= forward, strike < forward)
-    at = pd.MultiIndex.from_arrays([chain.ts, chain.strike])
-    invert = out_of_money | ~at.isin(at[out_of_money])
-
-    volatility = np.empty(int(invert.sum()), dtype=float)
-    for call in (True, False):
-        side = (is_call == call)[invert]
-        rows = invert & (is_call == call)
-        volatility[side] = implied_vol(
-            chain["last"].to_numpy(float)[rows],
-            forward[rows],
-            strike[rows],
-            T[rows],
-            discount[rows],
-            is_call=call,
-        )
-
-    return pd.Series(volatility, index=at[invert], name="iv")
-
-
-@lru_cache(maxsize=1)
-def solved_chain() -> pd.DataFrame:
-    """The runtime frame with the volatility this engine solved for itself.
-
-    The `iv` column here is not the one the file shipped - that one is dropped at load.
-    A strike whose volatility did not solve carries `NaN` and reaches the wire as `null`
-    (ADR-0001 bans NaN there); on this day every quoted strike solves.
-    """
-    chain = load_chain()
-    return chain.assign(iv=pd.MultiIndex.from_arrays([chain.ts, chain.strike])
-                        .map(solved_volatility()))
-
-
 @lru_cache(maxsize=256)
-def snapshot(moment: str | pd.Timestamp) -> pd.DataFrame:
+def snapshot(moment: str | datetime) -> pl.DataFrame:
     """The Chain as-of `moment`: the last known quote for every strike at or before it.
 
     Every row carries `age_minutes`. On the sample day the median quote is one minute
     old while the wings reach 153, and presenting the second as live would be dishonest
     rather than merely imprecise.
 
-    Cached per moment: the runtime file is immutable for the life of the process, so
-    the same minute cannot produce two different snapshots. Callers treat the frame as
-    read-only. Building one costs 5.5 ms - not the 0.258 ms #23 measured for a
-    searchsorted index, but still an order of magnitude inside the round trip it saves,
-    and the cache takes a repeat to microseconds.
+    Cached per moment: the store is immutable for the life of the process, so the same
+    minute cannot produce two different snapshots. Callers treat the frame as read-only.
     """
-    moment = pd.Timestamp(moment)
-    at_or_before = solved_chain()[lambda chain: chain.ts <= moment]
-    latest = at_or_before.groupby(["strike", "option_type"], as_index=False).last()
-
-    age = (moment - latest.ts).dt.total_seconds() // 60
-
-    # Implied volatility is a property of the STRIKE, not of the side. Served as-of,
-    # a call and its put can be minutes apart: of the 41 both-sided strikes at the
-    # anchor minute only 9 share a minute, and the rest disagree by up to 0.0275. The
-    # one that belongs to the strike is the freshest of the two.
-    freshest = latest.sort_values("ts").groupby("strike").iv.last()
-
-    quotes = latest.assign(
-        age_minutes=age.astype("int64"),
-        strike_iv=latest.strike.map(freshest).astype(float),
+    at = _at(moment)
+    latest = (
+        chain_scan()
+        .filter(pl.col("timestamp_utc") <= at)
+        .sort("timestamp_utc")
+        .group_by("strike", "option_type", maintain_order=True)
+        .last()
+        .sort("timestamp_utc")
+        # Implied volatility is a property of the STRIKE, not of the side. Served as-of,
+        # a call and its put can be minutes apart: of the 41 both-sided strikes at the
+        # anchor minute only 9 share a minute, and the rest disagree by up to 0.0275. The
+        # one that belongs to the strike is the freshest of the two.
+        .with_columns(pl.col("iv").last().over("strike").alias("strike_iv"))
+        .with_columns(
+            (pl.lit(at) - pl.col("timestamp_utc")).dt.total_minutes().alias("age_minutes")
+        )
+        .sort("strike", "option_type")
+        .collect()
     )
+    if latest.is_empty():
+        raise StrikeNotQuoted(0.0, "--")
 
     # Delta is **computed**, never read (#53). It is priced at the moment being asked
     # about - this minute's forward, discount and T - and at the strike's one shared
     # volatility, not at whatever minute each side last printed in. A delta is a property
     # of the model now, not of when a print happened to land; pricing the two sides in
     # two different minutes gives a call and a put whose deltas do not even satisfy
-    # parity, which is what the file's own columns do here.
+    # parity, which is what the source file's own columns do here.
     fit = forward_at(moment)
-    delta = np.empty(len(quotes), dtype=float)
+    is_call = (latest["option_type"] == "CE").to_numpy()
+    strikes = latest["strike"].to_numpy()
+    volatility = latest["strike_iv"].to_numpy()
+
+    delta = np.empty(latest.height, dtype=float)
     for call in (True, False):
-        side = (quotes.option_type == "CE").to_numpy() == call
+        side = is_call == call
         if not side.any():
             continue
         delta[side] = black76_greeks(
             fit.forward,
-            quotes.strike.to_numpy(float)[side],
+            strikes[side],
             fit.T,
-            quotes.strike_iv.to_numpy(float)[side],
+            volatility[side],
             fit.discount,
             is_call=call,
         )["delta"]
-    return quotes.assign(delta=delta)
+    return latest.with_columns(delta=pl.Series("delta", delta))
 
 
-def spot_at(moment: str | pd.Timestamp) -> float:
-    """The NIFTY level at the moment - what the header shows and the x-axis measures."""
-    rows = load_chain()[lambda chain: chain.ts <= pd.Timestamp(moment)]
-    if rows.empty:
-        raise StrikeNotQuoted(0.0, "--")
-    return float(rows.spot.iloc[-1])
+def spot_at(moment: str | datetime) -> float:
+    """The NIFTY level at the moment - what the header shows.
+
+    Off the strict minute rather than off the last row of the day up to here, which is
+    the same number: Spot is observed once per minute and repeats across every strike in
+    it, which is why #64 moves it into a summary artifact of its own.
+    """
+    return float(strict_slice(moment)["spot"][0])
 
 
-def at_the_money(moment: str | pd.Timestamp) -> float:
+def at_the_money(moment: str | datetime) -> float:
     """The quoted strike nearest the **Forward** (#51).
 
     Not nearest Spot. The basis runs to +118.87 at the anchor minute, which is more than
@@ -267,16 +246,14 @@ def at_the_money(moment: str | pd.Timestamp) -> float:
     strike quoted that minute rather than failing: a coarser answer beats none.
     """
     rows = strict_slice(moment)
-    paired = paired_quotes(rows)
-    candidates = (
-        paired.index.to_numpy(float) if len(paired) else np.sort(rows.strike.unique())
-    )
+    paired = paired_strikes(rows)
+    candidates = paired if paired.size else np.sort(rows["strike"].unique().to_numpy())
     if not len(candidates):
         raise StrikeNotQuoted(0.0, "--")
     return float(candidates[np.abs(candidates - forward_at(moment).forward).argmin()])
 
 
-def resolve_legs(requests: list[LegRequest], moment: str | pd.Timestamp) -> list[Leg]:
+def resolve_legs(requests: list[LegRequest], moment: str | datetime) -> list[Leg]:
     """Turn what the client asked for into Legs the engine can price.
 
     This is where implied volatility enters the system - **looked up, never accepted
@@ -286,14 +263,17 @@ def resolve_legs(requests: list[LegRequest], moment: str | pd.Timestamp) -> list
     Entry Premium is the Chain's last traded price unless the client overrode it
     (story 18), which is the one price a trader legitimately supplies.
     """
-    quotes = snapshot(moment).set_index(["strike", "option_type"])
+    quotes = {
+        (quote["strike"], quote["option_type"]): quote
+        for quote in snapshot(moment).iter_rows(named=True)
+    }
 
     legs = []
     for request in requests:
         key = (request.strike, request.option_type)
-        if key not in quotes.index:
+        if key not in quotes:
             raise StrikeNotQuoted(request.strike, request.option_type)
-        quote = quotes.loc[key]
+        quote = quotes[key]
 
         legs.append(
             Leg(
@@ -311,14 +291,17 @@ def resolve_legs(requests: list[LegRequest], moment: str | pd.Timestamp) -> list
     return legs
 
 
+@lru_cache(maxsize=1)
 def expiry_label() -> str:
-    """The single Expiry this dataset contains, read off the instrument name.
+    """The single Expiry this dataset contains, formatted off the **partition key**.
 
-    'NIFTY10FEB2623350PE.NFO' -> '10FEB26'. There is exactly one, which is why the
-    header shows text rather than a dropdown.
+    `expiry=2026-02-10` -> `10FEB26`. It used to be read off an instrument name inside
+    the file; now it comes from the path the tree was written under, which is the one
+    place a second Expiry would ever announce itself. There is exactly one, which is why
+    the header shows text rather than a dropdown.
     """
-    ticker = str(load_chain().Ticker.iloc[0])
-    return ticker.removeprefix("NIFTY")[:7]
+    expiry = chain_scan().select(pl.col("expiry").first()).collect().item()
+    return f"{expiry.day:02d}{MONTHS[expiry.month - 1]}{expiry.year % 100:02d}"
 
 
 @lru_cache(maxsize=1)
@@ -330,14 +313,16 @@ def moments() -> list[str]:
     minute in which nothing quoted has no bar, and offering it as a stop on the time
     control would hand a trader a slider position that returns an empty Chain.
 
-    **ISO 8601**, with the `T`, which is also what `as_of_view` echoes back. Pandas
-    parses `2026-01-27 06:30:00` and `2026-01-27T06:30:00` alike, so the two spellings
-    are interchangeable on the way *in* and were free to differ on the way out - and a
-    client that compares the moment on a Chain against the entry it asked for would have
-    found them unequal every single time, with nothing to see on screen. One spelling
-    out, and it is the one `Date` is specified to parse.
+    **ISO 8601**, with the `T`, which is also what `as_of_view` echoes back. Both
+    spellings parse on the way *in* and were free to differ on the way out - and a client
+    that compares the moment on a Chain against the entry it asked for would have found
+    them unequal every single time, with nothing to see on screen. One spelling out, and
+    it is the one `Date` is specified to parse.
     """
-    return [pd.Timestamp(stamp).isoformat() for stamp in load_chain().ts.unique()]
+    stamps = (
+        chain_scan().select("timestamp_utc").unique().sort("timestamp_utc").collect()
+    )
+    return [stamp.isoformat() for stamp in stamps["timestamp_utc"]]
 
 
 @lru_cache(maxsize=1)
@@ -348,26 +333,31 @@ def strike_bounds() -> tuple[float, float]:
     does, and an axis that resized as the trader moved through time would make two
     charts of the same Strategy incomparable.
     """
-    strikes = load_chain().strike
-    return float(strikes.min()), float(strikes.max())
+    low, high = (
+        chain_scan()
+        .select(pl.col("strike").min().alias("low"), pl.col("strike").max().alias("high"))
+        .collect()
+        .row(0)
+    )
+    return float(low), float(high)
 
 
-def as_of_view(moment: str | pd.Timestamp) -> ChainResponse:
+def as_of_view(moment: str | datetime) -> ChainResponse:
     """The Chain a trader sees: one row per strike, call and put either side.
 
     Served as-of, because a strict reading of "the Chain at this moment" is nine
-    strikes quoting both sides out of the ninety-four in the file - and on some minutes
+    strikes quoting both sides out of the ninety-four in the store - and on some minutes
     of this day, none at all. The last known quote at or before the moment gives 41.
     """
     sides: dict[float, dict[str, ChainQuote]] = {}
     strike_iv: dict[float, float] = {}
-    for quote in snapshot(moment).to_dict("records"):
+    for quote in snapshot(moment).iter_rows(named=True):
         strike_iv[float(quote["strike"])] = float(quote["strike_iv"])
         side = "call" if quote["option_type"] == "CE" else "put"
         sides.setdefault(float(quote["strike"]), {})[side] = ChainQuote(
             last=float(quote["last"]),
-            open_interest=float(quote["OpenInterest"]),
-            volume=float(quote["Volume"]),
+            open_interest=float(quote["open_interest"]),
+            volume=float(quote["volume"]),
             delta=float(quote["delta"]),
             age_minutes=int(quote["age_minutes"]),
         )
@@ -383,7 +373,7 @@ def as_of_view(moment: str | pd.Timestamp) -> ChainResponse:
     ]
     fit = forward_at(moment)
     return ChainResponse(
-        moment=pd.Timestamp(moment).isoformat(),
+        moment=_at(moment).isoformat(),
         spot=spot_at(moment),
         expiry=expiry_label(),
         forward=fit.forward,

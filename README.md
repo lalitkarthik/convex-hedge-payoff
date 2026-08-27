@@ -40,12 +40,26 @@ Those two commands are exactly what CI runs. Then open
 there, and the project is largely the act of moving it into a package without changing a number.
 
 The clone is ~46 MB because the market data is committed on purpose, so tests and CI need no
-external setup.
+external setup. The *derived* tree the engine serves from is not committed - it is a build
+product - so `tests/conftest.py` derives it once per session on the way in, and that sentence
+stays true.
 
 ## Running the website
 
-Two processes. The engine serves JSON; the frontend renders it and proxies to it, so the browser
-only ever talks to its own origin and no cross-origin policy exists to misconfigure (#25).
+Two processes, and one build before them. The engine serves JSON; the frontend renders it and
+proxies to it, so the browser only ever talks to its own origin and no cross-origin policy
+exists to misconfigure (#25).
+
+The engine **reads** the numbers it serves; it no longer solves them (#66). Deriving the day
+costs 1.4 s and the day cannot change, so it happens once, here, and lands in `Data/runtime/` -
+which is gitignored, being derived rather than authored. A fresh clone has to run this. The
+engine raises and names this command if the tree is missing, rather than quietly re-deriving
+and putting the 1.4 s back into the first request.
+
+```bash
+# once - derive the day the engine serves
+PYTHONPATH=src python scripts/build_runtime.py
+```
 
 ```bash
 # terminal 1 - the engine

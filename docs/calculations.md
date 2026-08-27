@@ -473,9 +473,11 @@ The engine repeats all of it across the whole day (#52), and the three cases abo
 | vectorised sweeps, whole day | 5 |
 | strikes with no solvable $\sigma$ | 0 |
 
-Implemented in `chain.solved_volatility()`, which inverts every minute of the day on first use and
+Implemented in `derive.solved_volatility()`, which inverts every minute of the day at once and
 costs **1.4 s** — of which the Newton itself is 30 ms and the rest is the 376 forward fits from §1
-that the classification needs.
+that the classification needs. Since [#66](https://github.com/lalitkarthik/convex-hedge-payoff/issues/66)
+that 1.4 s is paid by `scripts/build_runtime.py` and written to the store; the engine reads $\sigma$
+back off the row rather than solving it on the first request of every process.
 
 ### Where $\sigma$ is used
 
