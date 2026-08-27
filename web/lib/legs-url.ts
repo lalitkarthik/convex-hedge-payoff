@@ -7,12 +7,21 @@
  *
  * The format is meant to be *read* by a person glancing at the address bar:
  *
- *     25200CES1@344.05,25200PES1@326.7
- *     └──┬──┘└┤ ││└─┬─┘
- *      strike │ ││  └── entry premium, optional - absent means "use the Chain's last"
- *             │ │└───── quantity, a positive integer
- *             │ └────── B bought, S sold
- *             └──────── CE or PE
+ *     25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7
+ *     └──┬──┘└┤└──┬──┘││└─┬─┘
+ *      strike │   │   ││  └── entry premium, optional - absent means "use the Chain's last"
+ *             │   │   │└───── quantity, a positive integer
+ *             │   │   └────── B bought, S sold
+ *             │   └────────── Expiry, as the dropdown and `/chain` spell it
+ *             └────────────── CE or PE
+ *
+ * Strike, type and Expiry together are the **contract**; side, quantity and premium are
+ * how it was traded. The Expiry joined them with #71, and it is required rather than
+ * inherited from the `?expiry=` the view carries: a Leg names its own series, and a Leg
+ * that took the view's would change instrument when the trader changed the dropdown.
+ *
+ * The label is fixed-width — two digits, three letters, two digits — so it needs no
+ * delimiter to be told apart from the quantity that follows it.
  *
  * **A malformed link throws.** That is the entire design rule here. The tempting
  * alternative - skip the fragments that do not parse - shows a trader a chart of eight
@@ -30,7 +39,7 @@ export class LegsUrlError extends Error {
   }
 }
 
-const LEG = /^(\d+(?:\.\d+)?)(CE|PE)([BS])(\d+)(?:@(\d+(?:\.\d+)?))?$/;
+const LEG = /^(\d+(?:\.\d+)?)(CE|PE)(\d{2}[A-Z]{3}\d{2})([BS])(\d+)(?:@(\d+(?:\.\d+)?))?$/;
 
 export function encodeLegs(legs: LegRequest[]): string {
   return legs
@@ -40,7 +49,7 @@ export function encodeLegs(legs: LegRequest[]): string {
         leg.entry_premium === undefined || leg.entry_premium === null
           ? ""
           : `@${leg.entry_premium}`;
-      return `${leg.strike}${leg.option_type}${side}${leg.quantity ?? 1}${premium}`;
+      return `${leg.strike}${leg.option_type}${leg.expiry}${side}${leg.quantity ?? 1}${premium}`;
     })
     .join(",");
 }
@@ -58,10 +67,13 @@ export function decodeLegs(encoded: string | null | undefined): LegRequest[] {
   for (const fragment of encoded.split(",")) {
     const match = LEG.exec(fragment);
     if (!match) {
-      throw new LegsUrlError(fragment, "expected <strike><CE|PE><B|S><quantity>[@<premium>]");
+      throw new LegsUrlError(
+        fragment,
+        "expected <strike><CE|PE><expiry><B|S><quantity>[@<premium>], as in 25200CE10FEB26B1",
+      );
     }
 
-    const [, strike, optionType, side, quantity, premium] = match;
+    const [, strike, optionType, expiry, side, quantity, premium] = match;
     if (Number(quantity) < 1) {
       throw new LegsUrlError(fragment, "quantity is at least one; the sign lives in B or S");
     }
@@ -69,6 +81,7 @@ export function decodeLegs(encoded: string | null | undefined): LegRequest[] {
     legs.push({
       strike: Number(strike),
       option_type: optionType as OptionType,
+      expiry,
       direction: side === "B" ? 1 : -1,
       quantity: Number(quantity),
       // Left absent rather than defaulted: `LegRequest.entry_premium` is nullable so the

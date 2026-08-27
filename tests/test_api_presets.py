@@ -25,6 +25,9 @@ from payoff.api import app
 
 MOMENT = "2026-01-27T06:30:00"
 
+EXPIRY = "10FEB26"
+"""The dataset's one series, named on every Leg because a Leg carries its own (#71)."""
+
 ATM = 25200.0
 """The strike a Preset centres on when given none: the quoted strike nearest the
 **Forward**. Spot is 25100.25 and would select 25100; the basis of +118.87 moves it a
@@ -124,7 +127,9 @@ def test_an_iron_condor_is_four_legs_down_the_same_path_as_one(client):
         metrics["max_profit"] / abs(metrics["max_loss"]), rel=1e-9
     )
 
-    naked = analyse(client, [{"strike": ATM, "option_type": "CE", "direction": 1}])
+    naked = analyse(
+        client, [{"strike": ATM, "option_type": "CE", "expiry": EXPIRY, "direction": 1}]
+    )
     assert set(naked) == set(condor)
     assert set(naked["metrics"]) == set(metrics)
 
@@ -140,10 +145,10 @@ def test_choosing_a_preset_is_the_same_as_picking_its_legs_by_hand(client):
     by_hand = analyse(
         client,
         [
-            {"strike": 24900.0, "option_type": "PE", "direction": -1},
-            {"strike": 24700.0, "option_type": "PE", "direction": 1},
-            {"strike": 25300.0, "option_type": "CE", "direction": -1},
-            {"strike": 25500.0, "option_type": "CE", "direction": 1},
+            {"strike": 24900.0, "option_type": "PE", "expiry": EXPIRY, "direction": -1},
+            {"strike": 24700.0, "option_type": "PE", "expiry": EXPIRY, "direction": 1},
+            {"strike": 25300.0, "option_type": "CE", "expiry": EXPIRY, "direction": -1},
+            {"strike": 25500.0, "option_type": "CE", "expiry": EXPIRY, "direction": 1},
         ],
     )
     assert by_preset == by_hand

@@ -127,12 +127,19 @@ describe("the link a copy produces", () => {
 
   test("puts the Legs alongside the view rather than in place of it", () => {
     const href = strategyHref("/analyse", pickView(session(), ANCHOR), [
-      { strike: 25200, option_type: "CE", direction: -1, quantity: 1, entry_premium: 344.05 },
+      {
+        strike: 25200,
+        option_type: "CE",
+        expiry: "10FEB26",
+        direction: -1,
+        quantity: 1,
+        entry_premium: 344.05,
+      },
     ]);
 
     expect(href.startsWith("/analyse?")).toBe(true);
     const params = new URLSearchParams(href.split("?")[1]);
-    expect(params.get("legs")).toBe("25200CES1@344.05");
+    expect(params.get("legs")).toBe("25200CE10FEB26S1@344.05");
     expect(params.get("date")).toBe("2026-01-27");
   });
 });

@@ -28,11 +28,14 @@ from payoff.api import app
 
 MOMENT = "2026-01-27T06:30:00"
 
+EXPIRY = "10FEB26"
+"""The dataset's one series, named on every Leg because a Leg carries its own (#71)."""
+
 IRON_CONDOR = [
-    {"strike": 24800.0, "option_type": "PE", "direction": 1},
-    {"strike": 25000.0, "option_type": "PE", "direction": -1},
-    {"strike": 25400.0, "option_type": "CE", "direction": -1},
-    {"strike": 25600.0, "option_type": "CE", "direction": 1},
+    {"strike": 24800.0, "option_type": "PE", "expiry": EXPIRY, "direction": 1},
+    {"strike": 25000.0, "option_type": "PE", "expiry": EXPIRY, "direction": -1},
+    {"strike": 25400.0, "option_type": "CE", "expiry": EXPIRY, "direction": -1},
+    {"strike": 25600.0, "option_type": "CE", "expiry": EXPIRY, "direction": 1},
 ]
 
 PREMIUMS = {
@@ -55,10 +58,10 @@ CREDIT = 141.65
 """The Net Premium received, which for a short condor is also its Max Profit."""
 
 WIDE = [
-    {"strike": 24000.0, "option_type": "CE", "direction": 1},
-    {"strike": 25000.0, "option_type": "CE", "direction": -1},
-    {"strike": 25400.0, "option_type": "PE", "direction": -1},
-    {"strike": 26400.0, "option_type": "PE", "direction": 1},
+    {"strike": 24000.0, "option_type": "CE", "expiry": EXPIRY, "direction": 1},
+    {"strike": 25000.0, "option_type": "CE", "expiry": EXPIRY, "direction": -1},
+    {"strike": 25400.0, "option_type": "PE", "expiry": EXPIRY, "direction": -1},
+    {"strike": 26400.0, "option_type": "PE", "expiry": EXPIRY, "direction": 1},
 ]
 """A four-Leg Strategy whose corners are 2,400 points apart, and the reason it is here.
 

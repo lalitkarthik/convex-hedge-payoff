@@ -51,12 +51,36 @@ def _unreadable_expiry(request: Request, error: catalog.UnreadableExpiry) -> JSO
     return JSONResponse(status_code=422, content={"detail": str(error)})
 
 
+@app.exception_handler(strategy.MixedExpiry)
+def _mixed_expiry(request: Request, error: strategy.MixedExpiry) -> JSONResponse:
+    """A Strategy whose Legs span more than one Expiry (#71).
+
+    422 rather than 404 or 500: both series may be perfectly well stored, so nothing is
+    missing and nothing broke. It is the *combination* that has no answer, which is what
+    Unprocessable Entity means.
+
+    Handled here rather than raised out of a pydantic validator so that the body is
+    `{"detail": "..."}` like every other refusal on this surface, and so that the sentence
+    a caller reads names the two series it sent. A validation envelope would say
+    `body -> legs`, which is where the problem is and not what it is. **#31 owns the
+    body's shape.**
+    """
+    return JSONResponse(status_code=422, content={"detail": str(error)})
+
+
 @app.post("/analyse", response_model=AnalysisResponse)
 def analyse(request: AnalysisRequest) -> AnalysisResponse:
-    """Everything about one Strategy, as-of one moment, in one response."""
+    """Everything about one Strategy, as-of one moment, in one response.
+
+    The Expiry comes off the **Legs** (#71) and the request no longer carries one. It is
+    settled before anything is read, because it is what the reads are keyed by: the header
+    figures below belong to one series at one minute, and a Strategy that named two would
+    otherwise take them from whichever the store listed first.
+    """
+    series = strategy.sole_expiry(request.legs)
     legs = chain.resolve_legs(request.legs, request.moment)
-    spot = chain.spot_at(request.moment)
-    fit = chain.forward_at(request.moment)
+    spot = chain.spot_at(request.moment, expiry=series)
+    fit = chain.forward_at(request.moment, expiry=series)
 
     rows = strategy.leg_greeks(legs, fit.forward, fit.discount, fit.T)
 
@@ -166,6 +190,8 @@ def list_presets() -> PresetResponse:
 def build_preset(
     name: str,
     moment: str,
+    date: str | None = None,
+    expiry: str | None = None,
     strike: float | None = None,
     width: float = presets.DEFAULT_WIDTH,
     direction: int = 1,
@@ -174,9 +200,15 @@ def build_preset(
 
     Returned as requests rather than analysed here, so that choosing a Preset and
     picking its Legs off the Chain are the same operation and not two paths that agree.
+
+    `date` and `expiry` name the series the Legs are built in, spelled as `/chain` spells
+    them, because a Leg carries its own Expiry now (#71) and a Preset is a shape rather
+    than a set of contracts. Omitted, they are the Chain's own answer for this minute -
+    not a constant, which would hand a trader Legs in a series they are not looking at.
     """
-    centre = chain.at_the_money(moment) if strike is None else strike
+    series = chain.expiry_at(moment, date, expiry)
+    centre = chain.at_the_money(moment, date, expiry) if strike is None else strike
     return PresetResponse(
         presets=list(presets.PRESETS),
-        legs=presets.build(name, centre, width=width, direction=direction),
+        legs=presets.build(name, centre, series, width=width, direction=direction),
     )

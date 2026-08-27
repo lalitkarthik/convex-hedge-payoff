@@ -83,7 +83,7 @@ describe("the Chain page", () => {
     await page.locator("tr.at-the-money .bs button.sell").first().click();
     await page.waitForFunction(() => window.location.search.includes("legs="));
 
-    expect(decodeURIComponent(page.url())).toContain("25200CES1@344.05");
+    expect(decodeURIComponent(page.url())).toContain("25200CE10FEB26S1@344.05");
 
     await page.reload({ waitUntil: "networkidle" });
     expect(await page.locator(".legs .leg").count()).toBe(1);
@@ -91,7 +91,7 @@ describe("the Chain page", () => {
 });
 
 describe("the Analyse page", () => {
-  const STRADDLE = "25200CES1@344.05,25200PES1@326.7";
+  const STRADDLE = "25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7";
 
   it("reproduces the whole Strategy from a cold URL", async () => {
     // The heart of #32: no click path, no store, no session - just the link. This is the
@@ -135,7 +135,7 @@ describe("the Analyse page", () => {
   it("refuses a link it cannot read, rather than analysing part of one", async () => {
     // Nine legs truncated to eight and a half by a chat client is the realistic case.
     // A chart of the eight that parsed would be wrong with nothing on screen saying so.
-    await page.goto(`${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=25200CES1,garbage`, {
+    await page.goto(`${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=25200CE10FEB26S1,garbage`, {
       waitUntil: "networkidle",
     });
 

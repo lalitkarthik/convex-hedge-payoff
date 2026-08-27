@@ -24,6 +24,23 @@ STRIKE = 25200.0
 STRADDLE_PREMIUM = 670.75
 """344.05 + 326.70, read off the Chain at the anchor moment."""
 
+EXPIRY = "10FEB26"
+"""The only series in this dataset, and the one every Leg below is in.
+
+Named once and stamped onto every Leg by the helper, so the assertions read as they did
+before #71 - the point of that ticket is that a single-Expiry Strategy is unchanged, and a
+test file in which the Expiry were visible on every line would be saying the opposite. The
+Expiry's *own* behaviour is asserted at the bottom of this file, where it belongs."""
+
+FAR_EXPIRY = "24FEB26"
+"""A second series, which this dataset does not have.
+
+All twenty-four dates trade 10FEB26 alone, so the one Strategy #71 exists to refuse cannot
+be built out of real data - it has to be named. That is a statement about the dataset, not
+about the rule: nothing in the engine is allowed to be shaped by there being one Expiry,
+and the tests at the foot of this file check that the refusal is about the *span* rather
+than about this label being unknown."""
+
 
 @pytest.fixture(scope="module")
 def client() -> TestClient:
@@ -31,7 +48,13 @@ def client() -> TestClient:
 
 
 def analyse(client: TestClient, legs: list[dict], **extra):
-    return client.post("/analyse", json={"moment": MOMENT, "legs": legs, **extra})
+    """Post a Strategy, in the dataset's one series unless a Leg names another.
+
+    The Expiry goes first in the merge so a Leg can override it, which is what the
+    multi-Expiry tests below do and nothing else does.
+    """
+    body = [{"expiry": EXPIRY, **leg} for leg in legs]
+    return client.post("/analyse", json={"moment": MOMENT, "legs": body, **extra})
 
 
 def test_a_single_bought_call_comes_back_as_a_payoff_curve(client):
@@ -273,3 +296,127 @@ def test_the_total_is_the_sum_of_the_legs_and_a_straddle_is_delta_flat(client):
     assert abs(body["total_greeks"]["delta"]) < 0.05, "sold straddle: nearly delta flat"
     assert body["total_greeks"]["gamma"] < 0.0, "and short gamma, which is the risk in it"
     assert body["total_greeks"]["theta"] > 0.0, "the compensation for carrying it"
+# --------------------------------------------------------------------------------------
+# The Expiry, which is a property of a Leg and not of the request (#71)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_leg_carries_its_expiry_and_the_request_carries_none(client):
+    """Both halves of #71's first criterion, asserted where a caller experiences them.
+
+    A Leg without an Expiry is not a Leg any more: once a second series trades, 25200 CE
+    names two different contracts, and the engine quietly choosing between them is the
+    silent wrongness this ticket exists to remove. So the field is required rather than
+    defaulted, and a Leg without one is refused rather than filled in.
+
+    The other half is that the *request* has nowhere to put one. `extra="forbid"` is what
+    makes that a refusal rather than a value accepted and ignored - a caller who sent
+    `expiry` at the top level and had it dropped would believe every Leg was in it.
+    """
+    without = client.post(
+        "/analyse",
+        json={"moment": MOMENT, "legs": [{"strike": STRIKE, "option_type": "CE", "direction": 1}]},
+    )
+    assert without.status_code == 422, without.text
+
+    at_the_request = client.post(
+        "/analyse",
+        json={
+            "moment": MOMENT,
+            "expiry": EXPIRY,
+            "legs": [{"strike": STRIKE, "option_type": "CE", "expiry": EXPIRY, "direction": 1}],
+        },
+    )
+    assert at_the_request.status_code == 422, at_the_request.text
+
+
+def test_a_strategy_whose_legs_span_two_expiries_is_refused(client):
+    """#71's whole point, and #64's story 14: 'told plainly', not charted.
+
+    At the near Expiry the far Leg has not expired. It is worth a price rather than a
+    Payoff, and pricing it needs the Target Date line the epic puts out of scope - so there
+    is no single Expiry line for this Strategy and nothing honest to draw. Summing the two
+    Payoffs anyway produces a curve with kinks in plausible places, which a trader would
+    read a Breakeven off and size a position against. Nothing downstream would catch it.
+
+    The error has to **name the problem**. A generic validation failure would say
+    `body -> legs`, which is where the problem is rather than what it is, and the trader on
+    the other end has a calendar spread on screen and no idea why it will not draw.
+    """
+    response = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "CE", "direction": 1, "expiry": FAR_EXPIRY},
+        ],
+    )
+    assert response.status_code == 422, response.text
+
+    body = response.json()
+    assert isinstance(body["detail"], str), "one sentence, as every other refusal here"
+    assert EXPIRY in body["detail"] and FAR_EXPIRY in body["detail"], "it names both series"
+    assert "Expiry" in body["detail"], "and says which word it is about"
+
+    assert "curve" not in body and "metrics" not in body, "nothing plausible is drawn instead"
+
+
+def test_the_refusal_is_about_the_span_and_not_about_an_unknown_series(client):
+    """The distinction that makes this a rule rather than an accident of the dataset.
+
+    Only 10FEB26 exists, so a Strategy naming a second series also names one the store does
+    not hold - and an engine that answered "24FEB26 did not trade on 2026-01-27" would look
+    correct today and be silently wrong the first day two series traded. The span is
+    settled before anything is looked up, so the two failures stay distinguishable:
+
+      - **two series, whatever their status** -> 422, there is no Expiry line to draw
+      - **one series, not stored**            -> 404, naming what that date did trade
+
+    This asserts the second, which is the one a check written the other way round would
+    swallow.
+    """
+    unstored = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": 1, "expiry": FAR_EXPIRY},
+            {"strike": STRIKE, "option_type": "PE", "direction": 1, "expiry": FAR_EXPIRY},
+        ],
+    )
+    assert unstored.status_code == 404, unstored.text
+    assert FAR_EXPIRY in unstored.json()["detail"]
+    assert EXPIRY in unstored.json()["detail"], "and what that date did trade"
+
+
+def test_one_series_spelled_two_ways_is_one_expiry(client):
+    """Two labels, one contract series - so this is a Strategy and not a calendar.
+
+    The pairing is decided on the Expiry each label *reads as*, never on the text. A check
+    over the raw strings would refuse this, and the same laziness would let two genuinely
+    different series through if they ever shared a spelling. Neither direction is exercised
+    by a dataset holding one Expiry, which is why it is asserted rather than assumed.
+    """
+    response = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1, "expiry": EXPIRY.lower()},
+        ],
+    )
+    assert response.status_code == 200, response.text
+
+    assert response.json()["metrics"]["breakevens"] == pytest.approx(
+        [24529.25, 25870.75], abs=1e-6
+    ), "and it is the same short straddle the rest of this file grades"
+
+
+def test_text_that_is_not_an_expiry_says_so_rather_than_returning_nothing(client):
+    """A link is hand-editable, so this arrives over the wire whatever the dropdown offers.
+
+    422 rather than 404: nothing was looked up, so nothing is missing - the text was never
+    an Expiry. The message is `catalog.parse_label`'s and it shows the form, because what a
+    caller holding a broken link needs is what a working one looks like.
+    """
+    response = analyse(
+        client, [{"strike": STRIKE, "option_type": "CE", "direction": 1, "expiry": "next month"}]
+    )
+    assert response.status_code == 422, response.text
+    assert "10FEB26" in response.json()["detail"], "the form, shown rather than described"

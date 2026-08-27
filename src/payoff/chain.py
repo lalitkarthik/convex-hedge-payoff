@@ -518,15 +518,28 @@ def resolve_legs(
 
     Entry Premium is the Chain's last traded price unless the client overrode it
     (story 18), which is the one price a trader legitimately supplies.
+
+    **Each Leg is looked up in its own Expiry** (#71), because that is the series it names
+    and 25200 CE is a different contract in each. One snapshot per distinct Expiry, built
+    once and reused, so the ordinary Strategy still reads one minute of one partition -
+    and a Strategy naming two would read both correctly rather than silently reading one
+    of them twice. `strategy.sole_expiry` is what stops such a Strategy reaching here; it
+    is not this function's job to assume it did.
     """
-    quotes = {
-        (quote["strike"], quote["option_type"]): quote
-        for quote in snapshot(moment, day).iter_rows(named=True)
-    }
+    snapshots: dict[str, dict[tuple[float, str], dict]] = {}
+
+    def quotes_in(expiry: str) -> dict[tuple[float, str], dict]:
+        if expiry not in snapshots:
+            snapshots[expiry] = {
+                (quote["strike"], quote["option_type"]): quote
+                for quote in snapshot(moment, day, expiry).iter_rows(named=True)
+            }
+        return snapshots[expiry]
 
     legs = []
     for request in requests:
         key = (request.strike, request.option_type)
+        quotes = quotes_in(request.expiry)
         if key not in quotes:
             raise StrikeNotQuoted(request.strike, request.option_type)
         quote = quotes[key]
@@ -546,6 +559,7 @@ def resolve_legs(
             Leg(
                 strike=request.strike,
                 option_type=request.option_type,
+                expiry=request.expiry,
                 direction=request.direction,
                 quantity=request.quantity,
                 entry_premium=(
@@ -578,6 +592,20 @@ def expiry_label(day: date = ANCHOR_DATE, expiry: date | None = None) -> str:
     """
     catalog.require(day, expiry)
     return catalog.label(expiry if expiry is not None else catalog.expiries(day)[0])
+
+
+def expiry_at(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> str:
+    """`expiry_label`, addressed the way the wire addresses everything else.
+
+    Exists for the Preset endpoint (#71): a Preset now builds Legs that carry an Expiry,
+    so it has to be told which series it is building in - and where a caller named none,
+    the answer is the one the Chain would have served for that minute, not a constant.
+    """
+    return expiry_label(_on(moment, day), catalog.as_expiry(expiry))
 
 
 @lru_cache(maxsize=32)

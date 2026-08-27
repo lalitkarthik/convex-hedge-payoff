@@ -34,19 +34,19 @@ class UnknownPreset(LookupError):
     """A name the picker does not offer."""
 
 
-def straddle(centre: float, width: float, direction: int) -> list[LegRequest]:
+def straddle(centre: float, width: float, direction: int, expiry: str) -> list[LegRequest]:
     """A call and a put at the same strike.
 
     Bought, it costs the two premiums and needs a move of that size in either direction
     to break even; sold, it receives them and keeps them if nothing happens.
     """
     return [
-        LegRequest(strike=centre, option_type=option_type, direction=direction)
+        LegRequest(strike=centre, option_type=option_type, expiry=expiry, direction=direction)
         for option_type in ("CE", "PE")
     ]
 
 
-def strangle(centre: float, width: float, direction: int) -> list[LegRequest]:
+def strangle(centre: float, width: float, direction: int, expiry: str) -> list[LegRequest]:
     """A straddle spread apart: the call above the money, the put below it.
 
     Cheaper than a straddle and needs a bigger move, which is the trade-off. Both
@@ -54,12 +54,12 @@ def strangle(centre: float, width: float, direction: int) -> list[LegRequest]:
     worthless.
     """
     return [
-        LegRequest(strike=centre + width, option_type="CE", direction=direction),
-        LegRequest(strike=centre - width, option_type="PE", direction=direction),
+        LegRequest(strike=centre + width, option_type="CE", expiry=expiry, direction=direction),
+        LegRequest(strike=centre - width, option_type="PE", expiry=expiry, direction=direction),
     ]
 
 
-def credit_spread(centre: float, width: float, direction: int) -> list[LegRequest]:
+def credit_spread(centre: float, width: float, direction: int, expiry: str) -> list[LegRequest]:
     """Sell a put, buy a further one below it: paid up front, loss bounded.
 
     The one directional Preset here, and the bullish one - it profits while Spot stays
@@ -68,12 +68,12 @@ def credit_spread(centre: float, width: float, direction: int) -> list[LegReques
     it is on the condor: reversing the signs is a debit spread, a different trade.
     """
     return [
-        LegRequest(strike=centre, option_type="PE", direction=-1),
-        LegRequest(strike=centre - width, option_type="PE", direction=1),
+        LegRequest(strike=centre, option_type="PE", expiry=expiry, direction=-1),
+        LegRequest(strike=centre - width, option_type="PE", expiry=expiry, direction=1),
     ]
 
 
-def iron_condor(centre: float, width: float, direction: int) -> list[LegRequest]:
+def iron_condor(centre: float, width: float, direction: int, expiry: str) -> list[LegRequest]:
     """Sell a strangle, buy a wider one around it.
 
     A bet that Expiry lands inside the body, with the bought wings turning what would
@@ -82,14 +82,14 @@ def iron_condor(centre: float, width: float, direction: int) -> list[LegRequest]
     condor, which is a different trade rather than the same one held the other way.
     """
     return [
-        LegRequest(strike=centre - width, option_type="PE", direction=-1),
-        LegRequest(strike=centre - 2 * width, option_type="PE", direction=1),
-        LegRequest(strike=centre + width, option_type="CE", direction=-1),
-        LegRequest(strike=centre + 2 * width, option_type="CE", direction=1),
+        LegRequest(strike=centre - width, option_type="PE", expiry=expiry, direction=-1),
+        LegRequest(strike=centre - 2 * width, option_type="PE", expiry=expiry, direction=1),
+        LegRequest(strike=centre + width, option_type="CE", expiry=expiry, direction=-1),
+        LegRequest(strike=centre + 2 * width, option_type="CE", expiry=expiry, direction=1),
     ]
 
 
-def iron_fly(centre: float, width: float, direction: int) -> list[LegRequest]:
+def iron_fly(centre: float, width: float, direction: int, expiry: str) -> list[LegRequest]:
     """A short straddle with wings bought: the condor's body squeezed to a point.
 
     It collects more than the condor at the same width, because a sold straddle
@@ -97,10 +97,10 @@ def iron_fly(centre: float, width: float, direction: int) -> list[LegRequest]:
     trade - more premium for less room - is the whole difference between the two.
     """
     return [
-        LegRequest(strike=centre, option_type="CE", direction=-1),
-        LegRequest(strike=centre, option_type="PE", direction=-1),
-        LegRequest(strike=centre + width, option_type="CE", direction=1),
-        LegRequest(strike=centre - width, option_type="PE", direction=1),
+        LegRequest(strike=centre, option_type="CE", expiry=expiry, direction=-1),
+        LegRequest(strike=centre, option_type="PE", expiry=expiry, direction=-1),
+        LegRequest(strike=centre + width, option_type="CE", expiry=expiry, direction=1),
+        LegRequest(strike=centre - width, option_type="PE", expiry=expiry, direction=1),
     ]
 
 
@@ -120,11 +120,18 @@ load-bearing.
 def build(
     name: str,
     centre: float,
+    expiry: str,
     *,
     width: float = DEFAULT_WIDTH,
     direction: int = 1,
 ) -> list[LegRequest]:
-    """The Legs a Preset would have had a trader pick by hand."""
+    """The Legs a Preset would have had a trader pick by hand.
+
+    The Expiry is passed in rather than defaulted, because a Preset is a shape and not a
+    contract: every one of these Legs is a strike and a side, and which instrument that is
+    depends on the series (#71). A default here would be this module deciding what a
+    trader is looking at, which is the endpoint's question and not a Preset's.
+    """
     if name not in BUILDERS:
         raise UnknownPreset(name)
-    return BUILDERS[name](centre, width, direction)
+    return BUILDERS[name](centre, width, direction, expiry)

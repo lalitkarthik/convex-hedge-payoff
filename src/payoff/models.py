@@ -45,6 +45,18 @@ Unbounded = Finite | None
 shown to a trader as "Unlimited" (CONTEXT.md); it is never an infinity token and never
 a string."""
 
+ExpiryLabel = str
+"""An Expiry, spelled the one way the wire spells it: `10FEB26` (#68, #71).
+
+The same text `ChainResponse.expiry` echoes, `SessionResponse.expiry` names, the dropdown
+renders, the URL carries and `/chain` accepts - so a client compares what it asked for
+against what it got without a conversion in the middle.
+
+Left as plain text rather than pinned to a pattern here. `catalog.parse_label` is what
+reads one, and it says `cannot read "10FEV26" as an Expiry; the form is 10FEB26`, which
+a regular expression in the schema would replace with the regular expression.
+"""
+
 
 class LegRequest(BaseModel):
     """A Leg as a client is allowed to describe it.
@@ -56,12 +68,20 @@ class LegRequest(BaseModel):
 
     Entry Premium is the one price a trader may legitimately supply (story 18, "what if
     I had entered at X"). Absent, the Chain's last traded price is used.
+
+    **The Expiry is carried here and is required** (#71). A strike and a side do not name
+    a contract once more than one series trades - 25200 CE is a different instrument in
+    each of them - so a Leg described without one is ambiguous the moment the store holds
+    a second Expiry, and an ambiguity resolved by a default is one nobody sees resolved.
+    The request no longer carries a single Expiry for the whole Strategy: this is the
+    smaller schema, and it is what a calendar structure will eventually need.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     strike: float
     option_type: OptionType
+    expiry: ExpiryLabel
     direction: Direction
     quantity: Quantity = 1
     entry_premium: float | None = None
@@ -70,14 +90,19 @@ class LegRequest(BaseModel):
 class Leg(BaseModel):
     """A single option contract within a Strategy.
 
-    Strike, type, direction, Quantity, the price it was entered at, and its implied
-    volatility - and **not** its Lot Size. Lot Size is a multiplier applied when
+    Strike, type, **Expiry**, direction, Quantity, the price it was entered at, and its
+    implied volatility - and **not** its Lot Size. Lot Size is a multiplier applied when
     results are presented, never a property stored here, because the exchange revises
     it and every stored Leg would be silently wrong the day it changes (CONTEXT.md).
+
+    The Expiry survives resolution rather than being consumed by it (#71): the strike and
+    the side alone do not say which contract was priced, and a resolved Leg that had
+    forgotten its series could not be told apart from one in another.
     """
 
     strike: float
     option_type: OptionType
+    expiry: ExpiryLabel
     direction: Direction
     quantity: Quantity
     entry_premium: float
@@ -94,6 +119,16 @@ class AnalysisRequest(BaseModel):
     The moment is what the whole response is served as-of - the Chain, the Entry
     Premiums and the volatilities all come from it, so it is asked for once here rather
     than per Leg.
+
+    **The Expiry is the other way round** (#71). It is a property of each Leg and not of
+    the request, because a moment is one thing a Strategy is looked at from and an Expiry
+    is one thing each contract in it has. Nothing here restates it, so nothing here can
+    contradict a Leg.
+
+    A Strategy whose Legs span more than one Expiry is **refused** - see
+    `strategy.sole_expiry`. Not refused here: the rule is about what can be drawn rather
+    than about what can be typed, and `strategy.MixedExpiry` says which two series were
+    named where a validation envelope would say `body -> legs`.
     """
 
     model_config = ConfigDict(extra="forbid")

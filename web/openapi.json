@@ -3,7 +3,7 @@
     "schemas": {
       "AnalysisRequest": {
         "additionalProperties": false,
-        "description": "Analyse one Strategy, as-of one moment.\n\nThere is no Strategy type: a Strategy is an ordered list of Legs and nothing more\n(CONTEXT.md). The order is the order the trader built them in, and it is preserved\nbecause the per-Leg Greeks table (#27) is read alongside the Legs on screen.\n\nThe moment is what the whole response is served as-of - the Chain, the Entry\nPremiums and the volatilities all come from it, so it is asked for once here rather\nthan per Leg.",
+        "description": "Analyse one Strategy, as-of one moment.\n\nThere is no Strategy type: a Strategy is an ordered list of Legs and nothing more\n(CONTEXT.md). The order is the order the trader built them in, and it is preserved\nbecause the per-Leg Greeks table (#27) is read alongside the Legs on screen.\n\nThe moment is what the whole response is served as-of - the Chain, the Entry\nPremiums and the volatilities all come from it, so it is asked for once here rather\nthan per Leg.\n\n**The Expiry is the other way round** (#71). It is a property of each Leg and not of\nthe request, because a moment is one thing a Strategy is looked at from and an Expiry\nis one thing each contract in it has. Nothing here restates it, so nothing here can\ncontradict a Leg.\n\nA Strategy whose Legs span more than one Expiry is **refused** - see\n`strategy.sole_expiry`. Not refused here: the rule is about what can be drawn rather\nthan about what can be typed, and `strategy.MixedExpiry` says which two series were\nnamed where a validation envelope would say `body -> legs`.",
         "properties": {
           "legs": {
             "items": {
@@ -298,7 +298,7 @@
       },
       "LegRequest": {
         "additionalProperties": false,
-        "description": "A Leg as a client is allowed to describe it.\n\nDeliberately narrower than a `Leg`: there is no implied volatility here, because\nthe server looks it up (#23). A wrong volatility does not fail loudly - it produces\na plausible chart that nothing downstream would catch - so the field does not exist\nto be got wrong, and unknown fields are rejected rather than ignored.\n\nEntry Premium is the one price a trader may legitimately supply (story 18, \"what if\nI had entered at X\"). Absent, the Chain's last traded price is used.",
+        "description": "A Leg as a client is allowed to describe it.\n\nDeliberately narrower than a `Leg`: there is no implied volatility here, because\nthe server looks it up (#23). A wrong volatility does not fail loudly - it produces\na plausible chart that nothing downstream would catch - so the field does not exist\nto be got wrong, and unknown fields are rejected rather than ignored.\n\nEntry Premium is the one price a trader may legitimately supply (story 18, \"what if\nI had entered at X\"). Absent, the Chain's last traded price is used.\n\n**The Expiry is carried here and is required** (#71). A strike and a side do not name\na contract once more than one series trades - 25200 CE is a different instrument in\neach of them - so a Leg described without one is ambiguous the moment the store holds\na second Expiry, and an ambiguity resolved by a default is one nobody sees resolved.\nThe request no longer carries a single Expiry for the whole Strategy: this is the\nsmaller schema, and it is what a calendar structure will eventually need.",
         "properties": {
           "direction": {
             "enum": [
@@ -318,6 +318,10 @@
               }
             ],
             "title": "Entry Premium"
+          },
+          "expiry": {
+            "title": "Expiry",
+            "type": "string"
           },
           "option_type": {
             "enum": [
@@ -341,6 +345,7 @@
         "required": [
           "strike",
           "option_type",
+          "expiry",
           "direction"
         ],
         "title": "LegRequest",
@@ -621,7 +626,7 @@
   "paths": {
     "/analyse": {
       "post": {
-        "description": "Everything about one Strategy, as-of one moment, in one response.",
+        "description": "Everything about one Strategy, as-of one moment, in one response.\n\nThe Expiry comes off the **Legs** (#71) and the request no longer carries one. It is\nsettled before anything is read, because it is what the reads are keyed by: the header\nfigures below belong to one series at one minute, and a Strategy that named two would\notherwise take them from whichever the store listed first.",
         "operationId": "analyse_analyse_post",
         "requestBody": {
           "content": {
@@ -751,7 +756,7 @@
     },
     "/presets/{name}": {
       "get": {
-        "description": "The Legs a Preset builds, as a trader would have picked them by hand.\n\nReturned as requests rather than analysed here, so that choosing a Preset and\npicking its Legs off the Chain are the same operation and not two paths that agree.",
+        "description": "The Legs a Preset builds, as a trader would have picked them by hand.\n\nReturned as requests rather than analysed here, so that choosing a Preset and\npicking its Legs off the Chain are the same operation and not two paths that agree.\n\n`date` and `expiry` name the series the Legs are built in, spelled as `/chain` spells\nthem, because a Leg carries its own Expiry now (#71) and a Preset is a shape rather\nthan a set of contracts. Omitted, they are the Chain's own answer for this minute -\nnot a constant, which would hand a trader Legs in a series they are not looking at.",
         "operationId": "build_preset_presets__name__get",
         "parameters": [
           {
@@ -770,6 +775,38 @@
             "schema": {
               "title": "Moment",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
             }
           },
           {

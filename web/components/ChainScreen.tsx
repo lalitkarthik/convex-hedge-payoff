@@ -123,7 +123,17 @@ export default function ChainScreen({
       // same thing tomorrow, when the Chain no longer says 344.05.
       here(chain.moment, [
         ...legs,
-        { strike, option_type: optionType, direction, quantity: 1, entry_premium: quote.last },
+        {
+          strike,
+          option_type: optionType,
+          // The series this Chain is actually serving, off the response rather than off
+          // the URL: a Leg names its own contract (#71), and the two differ for exactly
+          // as long as it takes the engine to resolve a stale link.
+          expiry: chain.expiry,
+          direction,
+          quantity: 1,
+          entry_premium: quote.last,
+        },
       ]);
     },
     [chain, legs, here],
@@ -131,7 +141,7 @@ export default function ChainScreen({
 
   const applyPreset = useCallback(
     async (name: string) => {
-      const requested = await buildPreset(name, chain.moment);
+      const requested = await buildPreset(name, chain.moment, chain.expiry);
       const built = requested.flatMap((leg) => {
         const row = chain.rows.find((candidate) => candidate.strike === leg.strike);
         const quote = leg.option_type === "CE" ? row?.call : row?.put;

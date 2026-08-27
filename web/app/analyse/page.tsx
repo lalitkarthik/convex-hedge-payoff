@@ -1,6 +1,6 @@
 import AnalyseScreen from "@/components/AnalyseScreen";
 import LinkProblem from "@/components/LinkProblem";
-import { getSession, getSummary, postAnalysis } from "@/lib/api";
+import { ApiError, getSession, getSummary, postAnalysis } from "@/lib/api";
 import { LegsUrlError } from "@/lib/legs-url";
 import { decodeLegs, one, pickView } from "@/lib/strategy-url";
 
@@ -49,10 +49,28 @@ export default async function AnalysePage({
   // Two requests, not one, and deliberately: the analysis is the Strategy's, the summary
   // is the market's. Bundling them would put the market inside every response to a
   // question about four Legs.
-  const [summary, analysis] = await Promise.all([
-    getSummary(view.moment, view.date, view.expiry),
-    postAnalysis({ moment: view.moment, legs }),
-  ]);
+  let summary, analysis;
+  try {
+    [summary, analysis] = await Promise.all([
+      getSummary(view.moment, view.date, view.expiry),
+      postAnalysis({ moment: view.moment, legs }),
+    ]);
+  } catch (error) {
+    // A Strategy the engine will not chart, which since #71 is a link a person can hold:
+    // the dropdown clears the Legs when the series changes, so the only way to build one
+    // spanning two Expiries is to write it. #64's story 14 asks for that to be said
+    // plainly — a Next error boundary would say "Application error", and the sentence the
+    // engine wrote explaining exactly which two series were named would never be read.
+    if (!(error instanceof ApiError) || error.status !== 422) throw error;
+    return (
+      <LinkProblem
+        heading="This Strategy has no Expiry line"
+        message={error.detail}
+        because="Nothing has been charted, because a curve drawn across two Expiries looks like an answer and is not one."
+        view={view}
+      />
+    );
+  }
 
   return (
     <AnalyseScreen

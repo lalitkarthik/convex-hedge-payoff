@@ -22,16 +22,23 @@ adding their values at the same Forward; a domain centred on each Leg's own stri
 points that are not the same point, and the sum is wrong without ever looking wrong. That
 failure once reported a two-Leg delta of -157 where the true figure was +742.
 
+**One Expiry per Strategy (#71).** Every line below is the P&L *at Expiry*, so a Strategy
+spanning two series has no single line to be: at the near one the far Leg has not expired.
+`sole_expiry` is where that is refused, and it is refused rather than approximated because
+the approximation looks exactly like an answer.
+
 Lot Size is applied **here, at the presentation boundary** - never stored on a Leg
 (CONTEXT.md).
 """
 
+from collections.abc import Sequence
+from datetime import date
 from functools import lru_cache
 
 import numpy as np
 
-from payoff import pricing, store
-from payoff.models import Curve, Leg, LegGreeks, Metrics
+from payoff import catalog, pricing, store
+from payoff.models import Curve, Leg, LegGreeks, LegRequest, Metrics
 
 CURVE_POINTS = 400
 """#24 asks for at least 200. 400 is the width the vectorisation was measured at."""
@@ -42,6 +49,61 @@ domain the Payoff is defined on. The domain is the whole dataset's and comes fro
 manifest; this only decides how much of it a trader is shown. Wide enough that a four-Leg
 structure's wings are visible, narrow enough that the interesting region is not a flat
 line."""
+
+
+class MixedExpiry(ValueError):
+    """A Strategy whose Legs do not all expire on the same day (#71).
+
+    **Refused rather than drawn.** Every line this module produces is the P&L *at Expiry*,
+    and a Strategy spanning two series has no single one: at the near Expiry the far Leg
+    has not expired, so it is worth a price rather than a Payoff, and pricing it needs the
+    Target Date line that #64 puts out of scope for this whole epic.
+
+    The failure that makes this worth an exception is that nothing downstream would catch
+    it. Summing the two Legs' Payoffs produces a curve with the right number of kinks in
+    plausible places; a trader would read a Breakeven off it and size a position against
+    it. Refusing is the only outcome that is visibly wrong when it is wrong.
+
+    A `ValueError` rather than a `LookupError`: both series may be perfectly well stored,
+    so nothing is missing. It is the combination that cannot be answered, which is what
+    422 means and what `api.py` turns this into.
+    """
+
+    def __init__(self, spanned: Sequence[date]) -> None:
+        self.spanned = tuple(spanned)
+        named = ", ".join(catalog.label(one) for one in self.spanned)
+        super().__init__(
+            f"a Strategy's Legs must all share one Expiry, and these span {len(self.spanned)}: "
+            f"{named}. At the near Expiry the far Leg has not expired - it has a price, not "
+            "a Payoff - so there is no single Expiry line to draw for this Strategy. "
+            "Analyse one series at a time."
+        )
+
+
+def sole_expiry(legs: Sequence[LegRequest | Leg]) -> date | None:
+    """The one Expiry every Leg names, or `MixedExpiry` if they name more than one.
+
+    **Checked before anything is looked up**, which is what makes the error the one a
+    caller needs. A Strategy pairing this Expiry with one the store never held would
+    otherwise fail as `24FEB26 did not trade on 2026-01-27` - true, and about the wrong
+    subject, because the Strategy would still be unanswerable on a day that traded both.
+
+    The set is built from **parsed** Expiries rather than from the labels, so a link
+    holding two spellings of one series is one Expiry rather than two, and text that is
+    not an Expiry at all says so here (`catalog.UnreadableExpiry`, a 422) instead of
+    filtering the store to nothing several frames down.
+
+    `None` for a Strategy with no Legs - the page opens in that state and it is a
+    reachable URL, so it is not an error. It means "no series was named", and every reader
+    below treats that as it always has: the day's own, whatever the day traded.
+
+    Nothing here is shaped by the dataset holding exactly one Expiry today. A set of one
+    is not a special case of this function; it is the ordinary answer.
+    """
+    spanned = sorted({catalog.parse_label(leg.expiry) for leg in legs})
+    if len(spanned) > 1:
+        raise MixedExpiry(spanned)
+    return spanned[0] if spanned else None
 
 
 class PayoffNotStored(LookupError):

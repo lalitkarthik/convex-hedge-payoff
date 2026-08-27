@@ -129,16 +129,31 @@ export interface ChainResponse {
   rows: ChainRow[];
 }
 
-/** A Leg as a client may describe it. No volatility: the server looks that up. */
+/**
+ * A Leg as a client may describe it. No volatility: the server looks that up.
+ *
+ * The **Expiry is required and lives here**, not on the request (#71). A strike and a
+ * side name two different instruments once two series trade, so a Leg without one is
+ * ambiguous — and the ambiguity would be resolved by a default nobody sees applied.
+ * Spelled `10FEB26`, exactly as `ChainResponse.expiry` and the dropdown spell it.
+ */
 export interface LegRequest {
   strike: number;
   option_type: OptionType;
+  expiry: string;
   direction: Direction;
   quantity?: number;
   /** Absent means "use the Chain's last traded price". Never send 0 to mean absent. */
   entry_premium?: number | null;
 }
 
+/**
+ * One Strategy, as-of one moment. The moment is the request's; the Expiry is each Leg's.
+ *
+ * A Strategy whose Legs span two Expiries comes back **422 with a sentence naming both**,
+ * not a curve: at the near Expiry the far Leg has not expired, so there is no single
+ * Expiry line to draw. `ApiError.message` carries that sentence.
+ */
 export interface AnalysisRequest {
   moment: string;
   legs: LegRequest[];

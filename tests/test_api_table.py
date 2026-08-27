@@ -26,9 +26,12 @@ STRADDLE_PREMIUM = 670.75
 STEP = 50.0
 """The strike spacing on this chain, so the rows line up with strikes actually traded."""
 
+EXPIRY = "10FEB26"
+"""The dataset's one series, named on every Leg because a Leg carries its own (#71)."""
+
 SHORT_STRADDLE = [
-    {"strike": STRIKE, "option_type": "CE", "direction": -1},
-    {"strike": STRIKE, "option_type": "PE", "direction": -1},
+    {"strike": STRIKE, "option_type": "CE", "expiry": EXPIRY, "direction": -1},
+    {"strike": STRIKE, "option_type": "PE", "expiry": EXPIRY, "direction": -1},
 ]
 
 

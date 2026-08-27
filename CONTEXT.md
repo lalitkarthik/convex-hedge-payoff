@@ -52,9 +52,14 @@ _Avoid_: Valuation date, as-of date
 ## Structure
 
 **Leg**:
-A single option contract within a Strategy: its strike, its type (call or put), its direction
-(bought or sold), its Quantity, the price it was entered at, and its implied volatility. A Leg
-does **not** know its Lot Size.
+A single option contract within a Strategy: its strike, its type (call or put), its **Expiry**,
+its direction (bought or sold), its Quantity, the price it was entered at, and its implied
+volatility. A Leg does **not** know its Lot Size.
+
+The Expiry is carried on the Leg and not on the Strategy, because a strike and a type name two
+different instruments once two series trade. A Strategy whose Legs span more than one Expiry is
+**refused**: at the near Expiry the far Leg has not expired, so it has a price rather than a
+Payoff, and there is no single Expiry line for such a Strategy to have.
 _Avoid_: Position, contract, trade
 
 **Quantity**:

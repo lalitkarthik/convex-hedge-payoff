@@ -160,7 +160,13 @@ def test_a_leg_can_be_held_more_than_once(client):
             json={
                 "moment": MOMENT,
                 "legs": [
-                    {"strike": 25200.0, "option_type": ot, "direction": -1, "quantity": quantity}
+                    {
+                        "strike": 25200.0,
+                        "option_type": ot,
+                        "expiry": "10FEB26",
+                        "direction": -1,
+                        "quantity": quantity,
+                    }
                     for ot in ("CE", "PE")
                 ],
             },

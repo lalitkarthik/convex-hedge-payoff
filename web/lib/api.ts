@@ -40,7 +40,14 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly endpoint: string,
-    detail: string,
+    /**
+     * The server's own sentence, kept apart from the message.
+     *
+     * `message` is for a log and names the endpoint and the status; `detail` is the part
+     * written to be read by a person, and a page that shows it should not have to strip
+     * `/analyse → 422: ` off the front of it first.
+     */
+    readonly detail: string,
   ) {
     super(`${endpoint} → ${status}${detail ? `: ${detail}` : ""}`);
     this.name = "ApiError";
@@ -155,10 +162,20 @@ export function getPresets(): Promise<PresetResponse> {
  * They go back through `/analyse` exactly as hand-picked Legs do, which is what makes
  * "analysing a Preset" and "picking its Legs off the Chain" one operation instead of two
  * paths that agree.
+ *
+ * The Expiry is passed because a Leg carries one (#71) and a Preset is a shape rather
+ * than a set of contracts — so the caller says which series it is being built in, and the
+ * Legs come back naming it. Omitted, the engine answers with the Chain's own series for
+ * that minute, which is right for a caller that has not been given a choice and wrong for
+ * one that has.
  */
-export async function buildPreset(name: string, moment: string): Promise<LegRequest[]> {
+export async function buildPreset(
+  name: string,
+  moment: string,
+  expiry?: string,
+): Promise<LegRequest[]> {
   const body = await request<PresetResponse>(
-    `/presets/${encodeURIComponent(name)}?moment=${encodeURIComponent(moment)}`,
+    `/presets/${encodeURIComponent(name)}${query({ moment, expiry })}`,
   );
   return body.legs ?? [];
 }
