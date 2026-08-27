@@ -1,12 +1,13 @@
 """Implied volatility, solved rather than read (#52).
 
 `docs/calculations.md` section 4. The sample file carries an `iv` column and the engine
-must not read it: `chain.load_chain()` drops it, and this file is the **only** place in
-the tree where it is opened, on the right-hand side of a comparison.
+must not read it: since #67 the build does not open the file at all, and this is one of
+the few places in the tree where the column is read, on the right-hand side of a
+comparison.
 
 Two seams, and the split matters. `pricing.implied_vol` is the maths - it receives
 arrays and returns numbers, and is tested the way `test_oracle.py` tests the rest of
-that module. `chain.solved_volatility` is the **rule**: which leg is inverted, and which
+that module. `derive.solved_volatility` is the **rule**: which leg is inverted, and which
 strike copies its answer from a twin. Grading the rule anywhere else would mean the test
 re-deciding what the engine decides, and agreeing with itself.
 """
@@ -17,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from payoff import chain
+from payoff import derive
 from payoff.pricing import TRADING_DAYS_PER_YEAR, implied_vol
 
 SAMPLE = Path(__file__).resolve().parents[1] / "Data" / "sample" / "chain_2026-01-27.parquet"
@@ -81,7 +82,7 @@ def test_the_engine_recovers_the_sources_own_volatility_on_every_row(sample):
     below discounted intrinsic and so admit no volatility at all. The other 4,582 would
     solve, to a *different* number, because an in-the-money print goes stale.
     """
-    solved = chain.solved_volatility()
+    solved = derive.solved_volatility()
 
     assert solved.index.names == ["ts", "strike"], "one volatility per strike, not per side"
     assert len(solved) == 18_994, "the strike-minutes with a quote to invert"

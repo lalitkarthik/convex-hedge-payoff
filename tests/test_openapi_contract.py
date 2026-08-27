@@ -44,13 +44,24 @@ def test_the_committed_schema_is_the_one_the_app_serves(committed):
 def test_every_route_the_frontend_calls_is_in_it(committed):
     """Named explicitly, so deleting one is a decision rather than a diff nobody reads.
 
-    These five are the entire surface the browser talks to. A sixth appearing here
-    without a frontend that calls it is fine; one of these five disappearing is not.
+    These six are the entire surface the browser talks to. A seventh appearing here
+    without a frontend that calls it is fine; one of these six disappearing is not.
+
+    `/summary` joined them in #69: the header's four figures come off it, and on
+    `/analyse` it **replaced** the `/chain` call that page used to make to render them.
     """
     paths = committed["paths"]
-    assert set(paths) >= {"/session", "/chain", "/analyse", "/presets", "/presets/{name}"}
+    assert set(paths) >= {
+        "/session",
+        "/summary",
+        "/chain",
+        "/analyse",
+        "/presets",
+        "/presets/{name}",
+    }
 
     assert "get" in paths["/session"]
+    assert "get" in paths["/summary"]
     assert "get" in paths["/chain"]
     assert "post" in paths["/analyse"]
 
@@ -65,6 +76,7 @@ def test_the_schemas_the_client_generates_types_from_are_all_present(committed):
     schemas = committed["components"]["schemas"]
     assert {
         "SessionResponse",
+        "SummaryResponse",
         "ChainResponse",
         "ChainRow",
         "ChainQuote",

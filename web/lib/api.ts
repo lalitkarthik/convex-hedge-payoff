@@ -30,6 +30,7 @@ import type {
   LegRequest,
   PresetResponse,
   SessionResponse,
+  SummaryResponse,
 } from "./types";
 
 /** The dev default. Named here rather than inline so the failure message can point at it. */
@@ -39,7 +40,14 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly endpoint: string,
-    detail: string,
+    /**
+     * The server's own sentence, kept apart from the message.
+     *
+     * `message` is for a log and names the endpoint and the status; `detail` is the part
+     * written to be read by a person, and a page that shows it should not have to strip
+     * `/analyse → 422: ` off the front of it first.
+     */
+    readonly detail: string,
   ) {
     super(`${endpoint} → ${status}${detail ? `: ${detail}` : ""}`);
     this.name = "ApiError";
@@ -82,13 +90,52 @@ async function request<T>(endpoint: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** The day: which minutes exist, what expires, what the picker offers. Asked once. */
-export function getSession(): Promise<SessionResponse> {
-  return request<SessionResponse>("/session");
+/**
+ * One day and one Expiry: which minutes exist, what else exists, what the picker offers.
+ *
+ * Asked on every render rather than once, because since #68 a session is a *pair* and
+ * either dropdown can change it. It is also the only thing the two dropdowns are
+ * populated from — no fixture, no data file, no directory walk — which is the whole
+ * reason this endpoint was widened rather than a list being generated beside it.
+ *
+ * The pair passed in is what the URL held; the pair that comes back is what the store
+ * holds. They differ when a link is stale or hand-edited, and the response wins.
+ */
+export function getSession(date?: string, expiry?: string): Promise<SessionResponse> {
+  return request<SessionResponse>(`/session${query({ date, expiry })}`);
 }
 
-export function getChain(moment: string): Promise<ChainResponse> {
-  return request<ChainResponse>(`/chain?moment=${encodeURIComponent(moment)}`);
+export function getChain(
+  moment: string,
+  date?: string,
+  expiry?: string,
+): Promise<ChainResponse> {
+  return request<ChainResponse>(`/chain${query({ moment, date, expiry })}`);
+}
+
+/**
+ * The header at one minute: Spot, the Forward, the Discount Factor, the money (#69).
+ *
+ * **This is what moving the time control asks for.** The four figures belong to the
+ * minute rather than to the strike, and on the server they now come out of a 375-row-a-day
+ * artifact instead of the million-row Chain — so the header updates without anything
+ * touching the Chain at all.
+ *
+ * On `/analyse` it replaces the `getChain` this page used to make: the whole Chain was
+ * being fetched, 91 strikes of it, so that a header could show four numbers.
+ */
+export function getSummary(
+  moment: string,
+  date?: string,
+  expiry?: string,
+): Promise<SummaryResponse> {
+  return request<SummaryResponse>(`/summary${query({ moment, date, expiry })}`);
+}
+
+/** A query string from the parameters that have a value, in the order written. */
+function query(params: Record<string, string | undefined>): string {
+  const given = Object.entries(params).filter(([, value]) => value !== undefined);
+  return given.length ? `?${new URLSearchParams(given as [string, string][])}` : "";
 }
 
 /**
@@ -115,10 +162,20 @@ export function getPresets(): Promise<PresetResponse> {
  * They go back through `/analyse` exactly as hand-picked Legs do, which is what makes
  * "analysing a Preset" and "picking its Legs off the Chain" one operation instead of two
  * paths that agree.
+ *
+ * The Expiry is passed because a Leg carries one (#71) and a Preset is a shape rather
+ * than a set of contracts — so the caller says which series it is being built in, and the
+ * Legs come back naming it. Omitted, the engine answers with the Chain's own series for
+ * that minute, which is right for a caller that has not been given a choice and wrong for
+ * one that has.
  */
-export async function buildPreset(name: string, moment: string): Promise<LegRequest[]> {
+export async function buildPreset(
+  name: string,
+  moment: string,
+  expiry?: string,
+): Promise<LegRequest[]> {
   const body = await request<PresetResponse>(
-    `/presets/${encodeURIComponent(name)}?moment=${encodeURIComponent(moment)}`,
+    `/presets/${encodeURIComponent(name)}${query({ moment, expiry })}`,
   );
   return body.legs ?? [];
 }

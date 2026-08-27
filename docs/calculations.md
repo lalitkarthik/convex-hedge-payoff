@@ -25,6 +25,15 @@ the notebook or the API, its derivation is here.
 | $\Delta, \Gamma, \nu, \Theta$ | delta, gamma, vega and theta of a single contract |
 | $g_i$ | any one Greek of leg $i$ |
 
+> **The served chart's x-axis is $\hat F$, not $S_T$** (#72). `CONTEXT.md` names the
+> forward as the unit of the payoff chart's x-axis, the response field is `Curve.forward`,
+> and the window it spans is centred on the fitted forward rather than on spot. The
+> $S \to F$ shift set out in §2 is the alternative framing and is *not* applied on the
+> serving path: at expiry the forward is the settlement level, so a payoff that bends at
+> $K$ in $S_T$ bends at $K$ in the terminal forward too, and no basis has to be assumed to
+> hold. §2's derivation is left as written because it is what makes that equivalence
+> checkable.
+
 `dte_days` is a trading-day clock: one session consumes exactly 1.0, weekends and holidays
 none.
 
@@ -447,6 +456,33 @@ $\sigma_0 = 0.20$ is a constant fitted to one expiry in one market on one day. I
 it is not correct in general, and the fix when it comes is a **bisection fallback for rows Newton
 abandons, or a moneyness-aware seed** — not a different constant, which would only move the cliff.
 
+#### The fallback arrived with #67, and it was the near-expiry dates that brought it
+
+Widening the build from the anchor to all twenty-four dates walked the solver into the corner the
+paragraph above describes. On **10 February**, Expiry day, $T$ falls to $1/375/252 = 1.06	imes10^{-5}$
+years and vega with it: **9,419 of 34,002** invertible rows have a vega below `VEGA_FLOOR` at the flat
+seed, so Newton cannot take a first step at all. Not one of those prices sits at discounted intrinsic
+— a volatility exists for every one of them, and Newton simply cannot walk to it from 0.20.
+
+So `implied_vol` bisects those rows. The Black-76 price is monotone in $\sigma$, so the sign of the
+residual says which half of $[10^{-6}, 5]$ to keep and no derivative is consulted — which is the
+point, since the rows that get here are exactly the ones whose derivative has vanished. Sixty
+halvings put the answer below what float64 distinguishes.
+
+The fallback is entered **only where the Newton step was suppressed**, never where a row merely ran
+out of sweeps. That distinction is what keeps the iteration ceiling meaningful: a vega divided by 100
+makes every row *sluggish* rather than *collapsed*, so the test that catches that bug by passing a
+tight `max_sweeps` still catches it. A blanket "if Newton fails, bisect" would have quietly repaired
+the very bug the ceiling exists to expose.
+
+The volatilities it recovers reach **4.96**, which is not a runaway. What a price sees is
+$\sigma\sqrt{T}$, and at one minute to Expiry that is 0.016 — an ordinary number wearing an alarming
+annualisation.
+
+At the final bar $T$ is exactly **0**, the price stops depending on $\sigma$ altogether, and there is
+nothing to invert. Those rows carry no volatility rather than a fabricated one, which is what
+`ChainRow.iv` is nullable for.
+
 ### Verification
 
 Graded three ways at the 12:00 snapshot, 46 legs, all asserted in the notebook:
@@ -473,9 +509,11 @@ The engine repeats all of it across the whole day (#52), and the three cases abo
 | vectorised sweeps, whole day | 5 |
 | strikes with no solvable $\sigma$ | 0 |
 
-Implemented in `chain.solved_volatility()`, which inverts every minute of the day on first use and
+Implemented in `derive.solved_volatility()`, which inverts every minute of the day at once and
 costs **1.4 s** — of which the Newton itself is 30 ms and the rest is the 376 forward fits from §1
-that the classification needs.
+that the classification needs. Since [#66](https://github.com/lalitkarthik/convex-hedge-payoff/issues/66)
+that 1.4 s is paid by `scripts/build_runtime.py` and written to the store; the engine reads $\sigma$
+back off the row rather than solving it on the first request of every process.
 
 ### Where $\sigma$ is used
 
@@ -525,7 +563,8 @@ True of all four, so stated once:
 | **valuation moment** | the observed one. At the 12:00 IST snapshot of 27 Jan 2026 that is $T = 0.041905$ years, 10.56 trading days from the 10 Feb expiry |
 | **clock** | **trading days**, `dte_days / 252`. A weekend or a holiday consumes nothing (§0) |
 | **volatility** | $\sigma$ per strike from §4's Newton solve on that strike's out-of-the-money quote; one $\sigma$ shared by the call and the put |
-| **discounting** | $D$ from the same §1 fit. All four carry it |
+| **discounting** | $D$ from the same §1 fit. **$
+u$ and $ho$ carry it; $\Delta$ and $\Gamma$ do not** — the Oracle's convention, which this engine matches so that nothing has to be undone at a boundary |
 | **held fixed** | everything not named as the perturbation — in particular $\sigma$ does not move when $\hat F$ does |
 
 $d_1$ and $d_2$ are §4's, unchanged, with $N$ the standard normal CDF and $n$ its density:
@@ -534,17 +573,24 @@ $$d_1 = \frac{\ln(\hat F/K) + \tfrac{1}{2}\sigma^2 T}{\sigma\sqrt{T}}, \qquad d_
 
 #### $\Delta$ — one point of forward
 
-$$\Delta = \frac{\partial V}{\partial \hat F} = D\,N(d_1) \quad \text{(call)}, \qquad
-  D\bigl(N(d_1) - 1\bigr) \quad \text{(put)}$$
+$$\Delta = N(d_1) \quad 	ext{(call)}, \qquad N(d_1) - 1 \quad 	ext{(put)}$$
 
 Perturbs the forward by one index point, holding $\sigma$, $T$ and $D$. Units: rupees of contract
-value per point of forward. Range $[0, D]$ for a call and $[-D, 0]$ for a put — *not* $[0, 1]$,
-because the payoff is discounted; a $\Delta$ of exactly 1 would mean an undiscounted convention.
+value per point of forward. Range $[0, 1]$ for a call and $[-1, 0]$ for a put, so **a call's
+$\Delta$ less its put's is exactly 1** at every strike.
+
+**Undiscounted, and that is a choice.** A strict $\partial V/\partial \hat F$ on
+$V = D[\hat F N(d_1) - K N(d_2)]$ carries the $D$ and lands in $[0, D]$; #53 took that reading
+and shipped it. It is reverted here because the Oracle reports $N(d_1)$, and matching the desk
+beats being pedantic about a factor the desk then has to divide back out. The gap is 0.65% at
+the 12:00 snapshot — `test_api_chain.py` pins it by asserting that a call's delta less its
+put's is exactly 1, to $10^{-12}$.
+
 No time scale: it is a slope at this instant and this forward.
 
 #### $\Gamma$ — how fast $\Delta$ itself moves
 
-$$\Gamma = \frac{\partial^2 V}{\partial \hat F^2} = \frac{D \, n(d_1)}{\hat F \, \sigma \sqrt{T}}$$
+$$\Gamma = rac{n(d_1)}{\hat F \, \sigma \sqrt{T}}$$
 
 The same perturbation, but the *second* derivative: the change in $\Delta$ per point, not the
 change in value. Units: $\Delta$ per point, per contract — two orders of magnitude smaller than

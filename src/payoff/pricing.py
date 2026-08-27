@@ -72,21 +72,24 @@ def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
     They are not converted for readability - a confusing convention is a labelling
     problem, not a maths problem:
 
-    | **delta, gamma** | **discounted** - see below                        |
+    | **delta, gamma** | **undiscounted** - see below                          |
     | vega             | per volatility point (a 1% move, so divided by 100)   |
     | rho              | per one percent                                       |
     | **theta**        | **a one-trading-day repricing, not the analytic form** |
 
-    **Delta and gamma carry the discount factor, and the Oracle's do not** (#53). The
-    Black-76 price is `D[F N(d1) - K N(d2)]`, so every derivative of it inherits the D:
-    delta is `D N(d1)`, bounded by `[0, D]` rather than `[0, 1]`. A delta of exactly 1
-    would mean an undiscounted payoff, and this payoff is discounted.
+    **Delta and gamma are undiscounted, which is the Oracle's convention.** The Black-76
+    price is `D[F N(d1) - K N(d2)]`, so a strict derivative of it inherits the D and
+    delta would be `D N(d1)`, bounded by `[0, D]`. #53 took that reading and this engine
+    reported it; it is reverted here because the Oracle - the shipped platform Greeks
+    this project grades itself against - reports `N(d1)`, and a convention the desk does
+    not use is a convention that has to be undone at every boundary.
 
-    The gap is exactly a factor of D - large enough to matter and small enough to read as
-    rounding. D runs 0.982269 to 1.000000 across the dataset, so it reaches **1.77%** on
-    delta. `docs/calculations.md` left the choice open for #27; #53 settled it, and
-    `test_oracle.py` scales the Oracle's two columns up to this convention rather than
-    scaling ours down to theirs.
+    Delta is therefore bounded by `[0, 1]` for a call and `[-1, 0]` for a put, and
+    `test_oracle.py` now compares against the file directly with no rescaling on either
+    side. The two agree to 2.2e-16.
+
+    **Vega and rho keep their D**, because the Oracle discounts those. That asymmetry is
+    the Oracle's, not ours.
 
     The theta convention is the expensive trap. Against the Oracle the repricing
     definition matches to 1.1e-11, while an analytic theta divided down to one session
@@ -123,8 +126,10 @@ def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
 
     return {
         "price": price,
-        "delta": discount * (norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0),
-        "gamma": discount * norm.pdf(d1) / (forward * v),
+        # Undiscounted, matching the Oracle. See the convention table above: vega and
+        # rho below DO carry the D, because the Oracle discounts those two.
+        "delta": norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0,
+        "gamma": norm.pdf(d1) / (forward * v),
         "vega": discount * forward * norm.pdf(d1) * np.sqrt(T) / 100,
         "theta": repriced - price,
         "rho": (
@@ -170,6 +175,31 @@ collapses onto intrinsic and vega decays super-exponentially: at a Brenner-Subra
 seed of 0.0116 on the 23,500 put, vega is 3.8e-189 - 191 orders of magnitude below its
 value at the answer. No step size recovers from that, so the sweep stops instead."""
 
+BISECTION_STEPS = 60
+"""How far the fallback halves the bracket. 5.0 over 2^60 is far below what float64
+distinguishes, so this is a bound rather than a budget - the same role `MAX_SWEEPS` plays
+for Newton."""
+
+
+def _bisect(price, forward, strike, T, discount, *, is_call: bool) -> np.ndarray:
+    """The volatility that reproduces `price`, found by halving the search bracket.
+
+    Slower than Newton and immune to what stops it. The Black-76 price is monotonically
+    increasing in volatility, so the sign of the residual says which half to keep, and no
+    derivative is consulted at all - which is the point, because the rows that reach here
+    are exactly the ones whose derivative has vanished.
+    """
+    low = np.full(np.shape(price), VOL_SEARCH_BRACKET[0])
+    high = np.full(np.shape(price), VOL_SEARCH_BRACKET[1])
+
+    for _ in range(BISECTION_STEPS):
+        middle = 0.5 * (low + high)
+        over = black76_price(forward, strike, T, middle, discount, is_call=is_call) > price
+        high = np.where(over, middle, high)
+        low = np.where(over, low, middle)
+
+    return 0.5 * (low + high)
+
 
 def implied_vol(price, forward, strike, T, discount, *, is_call: bool, max_sweeps=MAX_SWEEPS):
     """The volatility that reproduces `price` under this module's own Black-76.
@@ -194,6 +224,19 @@ def implied_vol(price, forward, strike, T, discount, *, is_call: bool, max_sweep
     is a price no volatility reproduces. That raises rather than returning the edge of
     the search: silently handing back 500% would put a plausible curve on the screen
     (ADR-0001).
+
+    **A row whose tangent has collapsed is bisected rather than abandoned.** `VOL_SEED`
+    said this was coming - "the replacement is a bisection fallback or a moneyness-aware
+    seed, not a different number" - and #67 is what brought the data that needs it. Near
+    Expiry, `T` falls to 1.06e-5 years and vega with it: on 10 February, 9,419 of 34,002
+    invertible rows have a vega below `VEGA_FLOOR` at the flat seed, so Newton cannot take
+    a first step. Not one of those prices is at discounted intrinsic - a volatility
+    exists, Newton simply cannot walk to it from 0.20.
+
+    The fallback is entered **only** where the step was suppressed, never where the row
+    merely ran out of sweeps. That distinction is what keeps `max_sweeps` meaningful: a
+    vega divided by 100 makes every row sluggish rather than collapsed, so the test that
+    catches it by passing a tight ceiling still catches it.
     """
     price = np.asarray(price, dtype=float)
     forward = np.asarray(forward, dtype=float)
@@ -202,7 +245,9 @@ def implied_vol(price, forward, strike, T, discount, *, is_call: bool, max_sweep
     discount = np.asarray(discount, dtype=float)
 
     low, high = VOL_SEARCH_BRACKET
-    vol = np.full(np.broadcast(price, forward, strike, T, discount).shape, VOL_SEED)
+    shape = np.broadcast(price, forward, strike, T, discount).shape
+    vol = np.full(shape, VOL_SEED)
+    stuck = np.zeros(shape, dtype=bool)
 
     for _ in range(max_sweeps):
         residual = black76_price(forward, strike, T, vol, discount, is_call=is_call) - price
@@ -213,9 +258,11 @@ def implied_vol(price, forward, strike, T, discount, *, is_call: bool, max_sweep
         vega = discount * forward * norm.pdf(d1) * np.sqrt(T)
 
         # A collapsed vega stops that row rather than launching it: the step is the
-        # residual over a number on its way to zero. The row then fails the convergence
-        # check below, which is the outcome that gets reported.
+        # residual over a number on its way to zero. Those rows are remembered and
+        # bisected below - Newton has no way to move them, and no number of sweeps
+        # changes that.
         collapsed = vega < VEGA_FLOOR
+        stuck |= collapsed
         step = np.where(collapsed, 0.0, residual / np.where(collapsed, 1.0, vega))
         moved = np.clip(vol - step, low, high)
         if np.array_equal(moved, vol):
@@ -223,6 +270,12 @@ def implied_vol(price, forward, strike, T, discount, *, is_call: bool, max_sweep
         vol = moved
 
     residual = black76_price(forward, strike, T, vol, discount, is_call=is_call) - price
+    rescue = stuck & (np.abs(residual) >= VOL_TOLERANCE)
+    if rescue.any():
+        picked = np.broadcast_arrays(price, forward, strike, T, discount)
+        vol[rescue] = _bisect(*(row[rescue] for row in picked), is_call=is_call)
+        residual = black76_price(forward, strike, T, vol, discount, is_call=is_call) - price
+
     unsolved = int(np.count_nonzero(np.abs(residual) >= VOL_TOLERANCE))
     if unsolved:
         raise ValueError(f"no volatility reproduces the price on {unsolved} of {vol.size} rows")

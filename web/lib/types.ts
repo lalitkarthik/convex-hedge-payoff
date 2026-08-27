@@ -22,25 +22,77 @@
  *
  *  - `max_profit` / `max_loss` are `number | null`, and **`null` means Unlimited**.
  *    Never an infinity token, never a string, never blank (CONTEXT.md).
- *  - `delta` and `gamma` are **discounted** (#53), so a call's delta is bounded by the
- *    discount factor rather than by 1.
+ *  - `delta` and `gamma` are **undiscounted**, so a call's delta is bounded by 1 and a
+ *    call's delta less its put's is exactly 1 at every strike. `vega` and `rho` do carry
+ *    the discount factor.
  */
 
 export type OptionType = "CE" | "PE";
 export type Direction = 1 | -1;
 export type ForwardMethod = "parity_fit" | "single_strike_parity" | "spot";
 
-/** The day. Asked once, before anything else can name a moment. */
+/**
+ * One day and one Expiry. Asked whenever either dropdown moves.
+ *
+ * `date` and `expiry` name the pair this response describes, and they are **not
+ * necessarily the pair that was asked for** (#68): a request naming a date and an Expiry
+ * that date did not trade is resolved to a pair the store holds rather than refused. So
+ * a client renders these two fields, not what it sent — which is what keeps changing the
+ * date from producing an empty Chain.
+ */
 export interface SessionResponse {
-  /** Every minute that quoted, ISO 8601, in session order. 376 of them. */
+  /** The trading date this session describes, ISO 8601. */
+  date: string;
+  /** Every trading date in the store, ascending. What the date dropdown lists. */
+  dates: string[];
+  /** Every minute that quoted, ISO 8601, in session order. 376 of them on the anchor. */
   moments: string[];
   moment_count: number;
   first_moment: string;
   last_moment: string;
+  /** The Expiry this session describes, spelled as `ChainResponse.expiry` spells it. */
   expiry: string;
+  /**
+   * Every Expiry that traded on `date`, ascending. What the Expiry dropdown lists — only
+   * the ones that traded *that day*, so a pair the store does not hold is unpickable.
+   */
+  expiries: string[];
   strike_min: number;
   strike_max: number;
   presets: string[];
+}
+
+/**
+ * The header at one minute — and nothing about any strike (#69).
+ *
+ * Spot, the Forward, the Discount Factor and the at-the-money volatility belong to the
+ * **minute**. In the stored Chain they repeat across every one of that minute's ~196
+ * rows, so a header that read them there opened the largest artifact in the tree to take
+ * four numbers out of it. They are stored once instead, one row a minute, and this is
+ * that row.
+ *
+ * Dragging the time control moves the header 375 times across a session. Every one of
+ * those was a read of the Chain and is now a lookup.
+ *
+ * Every figure here is the one `ChainResponse` publishes for the same minute — by
+ * construction, because the build reduces the Chain frame it is about to write.
+ */
+export interface SummaryResponse {
+  moment: string;
+  /** The pair this row belongs to, spelled as `/session` and `/chain` spell them. */
+  date: string;
+  expiry: string;
+  spot: number;
+  forward: number;
+  discount: number;
+  forward_method: ForwardMethod;
+  /** Nearest quoted strike to the **Forward**, not to Spot — the basis reaches +118.87. */
+  atm_strike: number;
+  /**
+   * That strike's implied volatility, by the same rule `ChainRow.iv` follows. Null where
+   * the print no volatility reproduces — every strike in the last minute of Expiry day.
+   */
+  atm_iv: number | null;
 }
 
 export interface ChainQuote {
@@ -49,8 +101,12 @@ export interface ChainQuote {
   volume: number;
   /** How stale this print is. Reaches 153 at the wings, so it has to be visible. */
   age_minutes: number;
-  /** Per side, and genuinely so: a call and its put have deltas one apart, not equal. */
-  delta: number;
+  /**
+   * Per side, and genuinely so: a call and its put have deltas one apart, not equal.
+   * Null together with the row's `iv`: a delta is priced at the strike's volatility, so
+   * a print no volatility reproduces has no delta to publish either.
+   */
+  delta: number | null;
 }
 
 export interface ChainRow {
@@ -73,24 +129,50 @@ export interface ChainResponse {
   rows: ChainRow[];
 }
 
-/** A Leg as a client may describe it. No volatility: the server looks that up. */
+/**
+ * A Leg as a client may describe it. No volatility: the server looks that up.
+ *
+ * The **Expiry is required and lives here**, not on the request (#71). A strike and a
+ * side name two different instruments once two series trade, so a Leg without one is
+ * ambiguous — and the ambiguity would be resolved by a default nobody sees applied.
+ * Spelled `10FEB26`, exactly as `ChainResponse.expiry` and the dropdown spell it.
+ */
 export interface LegRequest {
   strike: number;
   option_type: OptionType;
+  expiry: string;
   direction: Direction;
   quantity?: number;
   /** Absent means "use the Chain's last traded price". Never send 0 to mean absent. */
   entry_premium?: number | null;
 }
 
+/**
+ * One Strategy, as-of one moment. The moment is the request's; the Expiry is each Leg's.
+ *
+ * A Strategy whose Legs span two Expiries comes back **422 with a sentence naming both**,
+ * not a curve: at the near Expiry the far Leg has not expired, so there is no single
+ * Expiry line to draw. `ApiError.message` carries that sentence.
+ */
 export interface AnalysisRequest {
   moment: string;
   legs: LegRequest[];
 }
 
-/** Two parallel arrays, as a chart consumes them. Both lines are P&L, not Payoff. */
+/**
+ * Two parallel arrays, as a chart consumes them. Both lines are P&L, not Payoff.
+ *
+ * **The x-axis is the Forward** (#72). This array was called `spot` and never carried
+ * one: its values are read off corner points stored on a shared Forward domain, and the
+ * window they span is centred on `AnalysisResponse.forward`. `CONTEXT.md` names the
+ * Forward as the unit of the chart's x-axis, so the wire says the same word.
+ *
+ * The basis is +118.87 at the anchor, which is why the old name was worth changing and
+ * not merely untidy: a Forward labelled Spot is a plausible index level, and nothing on
+ * screen looked wrong.
+ */
 export interface Curve {
-  spot: number[];
+  forward: number[];
   pnl_at_expiry: number[];
 }
 
@@ -115,7 +197,12 @@ export interface LegGreeks {
 /** Everything about one Strategy, in one response. Deliberately fat (#23). */
 export interface AnalysisResponse {
   moment: string;
+  /**
+   * The NIFTY level at the moment — observed, not derived, and **not the axis** (#72).
+   * Context a trader reads beside the Forward; nothing is plotted against it.
+   */
   spot: number;
+  /** The Forward the Greeks were priced at — and the centre of the chart's window (#72). */
   forward: number;
   discount: number;
   curve: Curve;

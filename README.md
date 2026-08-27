@@ -40,12 +40,41 @@ Those two commands are exactly what CI runs. Then open
 there, and the project is largely the act of moving it into a package without changing a number.
 
 The clone is ~46 MB because the market data is committed on purpose, so tests and CI need no
-external setup.
+external setup. The *derived* tree the engine serves from is not committed - it is a build
+product - so `tests/conftest.py` derives it once per session on the way in, and that sentence
+stays true.
 
 ## Running the website
 
-Two processes. The engine serves JSON; the frontend renders it and proxies to it, so the browser
-only ever talks to its own origin and no cross-origin policy exists to misconfigure (#25).
+Two processes, and one build before them. The engine serves JSON; the frontend renders it and
+proxies to it, so the browser only ever talks to its own origin and no cross-origin policy
+exists to misconfigure (#25).
+
+The engine **reads** the numbers it serves; it no longer solves them (#66). Deriving a day
+costs about 1.4 s and the day cannot change, so it happens once, here, and lands in
+`Data/runtime/` - which is gitignored, being derived rather than authored. A fresh clone has to
+run this. The engine raises and names this command if the tree is missing, rather than quietly
+re-deriving and putting the cost back into the first request.
+
+Since #67 the build derives **every trading date in the dataset** - twenty-four of them,
+1,062,024 rows, about fifty seconds - and `/chain` takes a `date`. The test suite builds three
+of the twenty-four rather than all of them; `tests/conftest.py` says which and why.
+
+It writes a **per-minute summary** beside the Chain (#69): Spot, the Forward, the Discount
+Factor and the at-the-money volatility belong to the minute rather than to a strike, and in the
+Chain they repeat across all ~196 of that minute's rows. Stored once they are 8,735 rows for
+the whole dataset against 1,062,024, and `/summary` is what the header and the time control
+read - so dragging the time control no longer opens the large file. The figures are the ones
+`/chain` publishes for the same minute, because the summary is reduced from the Chain frame on
+its way to disk rather than derived a second time.
+
+```bash
+# once - derive every day the engine serves
+PYTHONPATH=src python scripts/build_runtime.py
+
+# or just the ones you need, while iterating
+PYTHONPATH=src python scripts/build_runtime.py --dates=2026-01-27,2026-02-10
+```
 
 ```bash
 # terminal 1 - the engine

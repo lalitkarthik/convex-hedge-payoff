@@ -24,7 +24,12 @@ python scripts/build_sample.py
 
 `forward`, `discount` and `iv` are graded against, never read. The engine recovers the first two from
 put-call parity (#51) and solves the third from the out-of-the-money `last` (#52).
-`chain.load_chain()` drops all three, so the runtime frame does not carry them at all.
+
+Since #67 this file is **only** a fixture. It used to be the seed the runtime tree was built from, and
+the guard against reading an Oracle column was `derive.load_chain()` dropping them on the way in. The
+build now joins `options.parquet` and `index.parquet` itself, for all twenty-four dates, so nothing
+under `src/` or `scripts/` opens this file or `greeks.parquet` at all — `tests/test_seed.py` asserts
+that, and asserts that a seed built the new way reproduces this one column for column.
 
 `ts` is **UTC**. Add 5h30m for IST. See [`docs/data-quality.md`](../../docs/data-quality.md) for why
 that matters and for the full list of traps in the source data.

@@ -31,6 +31,7 @@ SCHEMA_FILE = WEB / "openapi.json"
 #: deliberately - it is a server-internal type that never crosses the wire.
 MIRRORED = [
     "SessionResponse",
+    "SummaryResponse",
     "ChainResponse",
     "ChainRow",
     "ChainQuote",

@@ -8,10 +8,18 @@ import Header from "./Header";
 import LegsStrip from "./LegsStrip";
 import PresetPicker from "./PresetPicker";
 import TimeControl from "./TimeControl";
+import ViewPicker from "./ViewPicker";
 
 import { buildPreset } from "@/lib/api";
-import { strategyHref } from "@/lib/strategy-url";
-import type { ChainResponse, Direction, LegRequest, OptionType, SessionResponse } from "@/lib/types";
+import { strategyHref, type View } from "@/lib/strategy-url";
+import type {
+  ChainResponse,
+  Direction,
+  LegRequest,
+  OptionType,
+  SessionResponse,
+  SummaryResponse,
+} from "@/lib/types";
 
 /**
  * The Chain screen: pick Legs, then go and look at them.
@@ -26,11 +34,15 @@ import type { ChainResponse, Direction, LegRequest, OptionType, SessionResponse 
  */
 export default function ChainScreen({
   session,
+  summary,
   chain,
+  view,
   legs,
 }: {
   session: SessionResponse;
+  summary: SummaryResponse;
   chain: ChainResponse;
+  view: View;
   legs: LegRequest[];
 }) {
   const router = useRouter();
@@ -42,10 +54,53 @@ export default function ChainScreen({
   );
 
   const go = useCallback(
-    (moment: string, next: LegRequest[]) => {
-      startTransition(() => router.replace(strategyHref("/", moment, next), { scroll: false }));
+    (next: View, withLegs: LegRequest[]) => {
+      startTransition(() => router.replace(strategyHref("/", next, withLegs), { scroll: false }));
     },
     [router],
+  );
+
+  /** Every navigation that keeps the day and the series, which is most of them. */
+  const here = useCallback(
+    (moment: string, next: LegRequest[]) => go({ ...view, moment }, next),
+    [go, view],
+  );
+
+  /**
+   * A different day, at the same clock time.
+   *
+   * The moment is rewritten onto the new date rather than carried across whole, so the
+   * link never reads `date=2026-01-07&moment=2026-01-27T…` — two days in one address,
+   * which reload resolves correctly and a person cannot. Only the date part is replaced;
+   * the stamps are fixed-width ISO 8601, and re-formatting the engine's own strings is
+   * how a spelling drifts.
+   *
+   * Whether that minute exists is not something this side can know — 7 January quoted
+   * 150 of the session's 376 — so `pickMoment` settles it on the next render, against
+   * the session for the day that was actually picked.
+   *
+   * The Expiry is carried rather than cleared: it is still what the trader chose, and
+   * the engine resolves it to one the new date traded if that day never traded it. The
+   * Legs are carried too — a Leg is a strike and a side in a series, and the series has
+   * not changed, so "what would this have looked like on the 7th" is a question the link
+   * can still ask.
+   */
+  const goDate = useCallback(
+    (date: string) => go({ ...view, date, moment: date + view.moment.slice(10) }, legs),
+    [go, view, legs],
+  );
+
+  /**
+   * A different series, and the Legs do **not** come with it.
+   *
+   * A Leg names a strike and a side, and which contract that is depends on the Expiry.
+   * Carrying 25,200 CE from one series into another would keep the label and silently
+   * change the instrument, which is the failure mode #64 rejects a calendar Strategy
+   * over rather than drawing something plausible.
+   */
+  const goExpiry = useCallback(
+    (expiry: string) => go({ ...view, expiry }, []),
+    [go, view],
   );
 
   const atTheMoney = useMemo(
@@ -66,17 +121,27 @@ export default function ChainScreen({
       // Entry Premium defaults to the Chain's last traded price and is editable — story
       // 18, "what if I had entered at X". It is carried in the URL so the link means the
       // same thing tomorrow, when the Chain no longer says 344.05.
-      go(chain.moment, [
+      here(chain.moment, [
         ...legs,
-        { strike, option_type: optionType, direction, quantity: 1, entry_premium: quote.last },
+        {
+          strike,
+          option_type: optionType,
+          // The series this Chain is actually serving, off the response rather than off
+          // the URL: a Leg names its own contract (#71), and the two differ for exactly
+          // as long as it takes the engine to resolve a stale link.
+          expiry: chain.expiry,
+          direction,
+          quantity: 1,
+          entry_premium: quote.last,
+        },
       ]);
     },
-    [chain, legs, go],
+    [chain, legs, here],
   );
 
   const applyPreset = useCallback(
     async (name: string) => {
-      const requested = await buildPreset(name, chain.moment);
+      const requested = await buildPreset(name, chain.moment, chain.expiry);
       const built = requested.flatMap((leg) => {
         const row = chain.rows.find((candidate) => candidate.strike === leg.strike);
         const quote = leg.option_type === "CE" ? row?.call : row?.put;
@@ -84,18 +149,19 @@ export default function ChainScreen({
         // away, so a Leg with no quote at this minute is dropped rather than faked.
         return quote ? [{ ...leg, entry_premium: quote.last }] : [];
       });
-      go(chain.moment, built);
+      here(chain.moment, built);
     },
-    [chain, go],
+    [chain, here],
   );
 
   return (
     <div className="shell">
-      <Header chain={chain}>
+      <Header summary={summary}>
+        <ViewPicker session={session} onDate={goDate} onExpiry={goExpiry} />
         <TimeControl
           moments={session.moments}
           index={index}
-          onChange={(next) => go(session.moments[next], legs)}
+          onChange={(next) => here(session.moments[next], legs)}
         />
       </Header>
 
@@ -114,12 +180,12 @@ export default function ChainScreen({
           <LegsStrip
             legs={legs}
             onChange={(at, leg) =>
-              go(
+              here(
                 chain.moment,
                 legs.map((existing, i) => (i === at ? leg : existing)),
               )
             }
-            onRemove={(at) => go(chain.moment, legs.filter((_, i) => i !== at))}
+            onRemove={(at) => here(chain.moment, legs.filter((_, i) => i !== at))}
           />
 
           {legs.length === 0 ? (
@@ -128,7 +194,7 @@ export default function ChainScreen({
               Strategy is kept in the address bar, so the link you copy is the position.
             </p>
           ) : (
-            <a className="analyse" href={strategyHref("/analyse", chain.moment, legs)}>
+            <a className="analyse" href={strategyHref("/analyse", view, legs)}>
               Analyse {legs.length} {legs.length === 1 ? "Leg" : "Legs"} →
             </a>
           )}

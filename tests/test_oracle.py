@@ -113,13 +113,12 @@ GREEKS = ("delta", "gamma", "vega", "theta", "rho")
 """The five the Oracle ships and #26 grades. Vanna, volga and charm are in the file and
 are deliberately not asserted - nothing in v1 computes them."""
 
-DISCOUNTED = ("delta", "gamma")
-"""The two whose convention this engine does not share with the Oracle (#53).
+"""Every Greek is now compared **as-is, both sides**.
 
-The Black-76 price is `D[F N(d1) - K N(d2)]`, so every derivative of it inherits the D.
-The file reports `N(d1)`; we report `D N(d1)`. `docs/calculations.md` left the choice to
-#27 and #53 settled it: a delta of exactly 1 would mean an undiscounted payoff, and this
-payoff is discounted."""
+#53 discounted delta and gamma, so this module used to scale the Oracle's two columns up
+by D before comparing. That is reverted: delta and gamma are undiscounted here, matching
+the file, and nothing is rescaled. The comparison is stronger for it - a rescaling step
+is a place a sign or a factor can hide."""
 
 TOLERANCE = 1e-6
 """#26's figure. The measured drift is orders of magnitude below it, so this is a
@@ -145,13 +144,9 @@ def drift_against_the_oracle(oracle: pd.DataFrame) -> dict[str, float]:
             is_call=option_type == "CE",
         )
         for greek in GREEKS:
-            # Delta and gamma are DISCOUNTED here and undiscounted in the file (#53), so
-            # the Oracle is scaled up to this convention rather than ours scaled down to
-            # it. The gap is exactly D - it reaches 1.77%, which is large enough to
-            # matter and small enough to read as rounding.
+            # Compared directly. No column on either side is rescaled: the engine's
+            # conventions are the Oracle's throughout.
             theirs = rows[greek].to_numpy()
-            if greek in DISCOUNTED:
-                theirs = theirs * discount
             worst[greek] = max(worst[greek], float(np.abs(mine[greek] - theirs).max()))
     return worst
 
@@ -161,9 +156,10 @@ def test_all_five_greeks_reproduce_the_oracle_on_every_row(oracle):
 
     Not a sample, not a tolerance chosen to make it pass: every one of the 23,581 rows,
     against Greeks that were computed independently of this code. The conventions are
-    the Oracle's and several are not textbook - delta and gamma undiscounted, vega per
-    volatility point, rho per one percent, and theta a one-trading-day repricing rather
-    than the analytic formula. Writing the analytic theta fails here for a reason that
+    the Oracle's and several are not textbook - delta and gamma undiscounted while vega
+    and rho are discounted, vega per volatility point, rho per one percent, and theta a
+    one-trading-day repricing rather than the analytic formula. Writing the analytic
+    theta fails here for a reason that
     looks like a bug and is not.
 
     Graded against the Greeks columns and never against `last`: implied volatility is
@@ -272,8 +268,10 @@ def test_the_interface_takes_no_spot_no_rate_and_reads_no_data():
     """ADR-0001, asserted rather than trusted: `price(forward, strike, T, vol,
     discount, is_call)`.
 
-    The payoff chart's x-axis is Spot, so the obvious signature takes one. It was
-    rejected: a core accepting a Spot and a rate has to reconstruct the Forward
+    The payoff chart's x-axis was called Spot when this was written, so the obvious
+    signature took one. It was rejected then, and the axis itself has since moved to the
+    Forward (#72, CONTEXT.md) - so nothing above this seam takes a Spot either. A core
+    accepting a Spot and a rate has to reconstruct the Forward
     internally, and the reconstruction is the unstable part - the implied continuous
     rate runs 0.9% to 28.4% and diverges as T approaches zero, and on 2,397 of 8,356
     minutes a Forward cannot be fitted at all. That contested rule (#13) lives above

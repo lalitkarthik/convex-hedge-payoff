@@ -110,6 +110,37 @@ html, body {
   white-space: nowrap;
 }
 
+/* ------------------------------------------------------------- pickers */
+
+/* The date and Expiry dropdowns (#68). Shaped as a `.stat` deliberately: they sit in the
+   row that reads Spot, Forward, Expiry, and a control that looked like a control would
+   pull the eye off the figures. The label above and the value below are the same two
+   lines, and only the caret says one of them can be changed. */
+.picker { display: flex; flex-direction: column; line-height: 1.25; }
+
+.picker-select {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 0 2px;
+  margin: -1px -3px;
+  cursor: pointer;
+}
+.picker-select:hover { border-color: var(--line-strong); background: var(--bg); }
+.picker-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* One Expiry exists in this dataset, so the second control is disabled rather than
+   hidden. A control that appeared the day a second series was built would be a control
+   nobody had ever run against two; this one is always there and says why it cannot
+   move. */
+.picker-select:disabled { color: var(--ink-soft); cursor: default; }
+.picker-select:disabled:hover { border-color: transparent; background: transparent; }
+
 /* --------------------------------------------------------- time control */
 
 .time { flex: 1 1 320px; min-width: 260px; display: flex; flex-direction: column; gap: 2px; }

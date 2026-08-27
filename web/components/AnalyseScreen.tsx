@@ -10,8 +10,13 @@ import PayoffChart from "./PayoffChart";
 import PayoffTable from "./PayoffTable";
 
 import { istClock } from "@/lib/format";
-import { strategyHref } from "@/lib/strategy-url";
-import type { AnalysisResponse, ChainResponse, LegRequest, SessionResponse } from "@/lib/types";
+import { strategyHref, type View } from "@/lib/strategy-url";
+import type {
+  AnalysisResponse,
+  LegRequest,
+  SessionResponse,
+  SummaryResponse,
+} from "@/lib/types";
 
 /**
  * The analysis, rendered. **Nothing here computes anything.**
@@ -30,26 +35,32 @@ type Tab = "pnl" | "greeks" | "table";
 
 export default function AnalyseScreen({
   session,
-  chain,
+  summary,
   analysis,
   legs,
-  moment,
+  view,
 }: {
   session: SessionResponse;
-  chain: ChainResponse;
+  summary: SummaryResponse;
   analysis: AnalysisResponse;
   legs: LegRequest[];
-  moment: string;
+  view: View;
 }) {
   const [tab, setTab] = useState<Tab>("pnl");
 
   return (
     <div className="shell">
-      <Header chain={chain}>
-        <a className="back" href={strategyHref("/", moment, legs)}>
+      <Header summary={summary}>
+        <a className="back" href={strategyHref("/", view, legs)}>
           ← Chain
         </a>
-        <span className="chip">as of {istClock(moment)} IST</span>
+        {/* Which day and which series, as text rather than as the Chain's two dropdowns:
+            an analysis is of one Strategy at one minute, and changing either underneath
+            it would be changing the question rather than the view. The way to another
+            day is back to the Chain, which is the link immediately to the left. */}
+        <span className="chip">{view.date}</span>
+        <span className="chip">{summary.expiry}</span>
+        <span className="chip">as of {istClock(view.moment)} IST</span>
         <span className="chip">{session.moment_count} minutes in session</span>
       </Header>
 
@@ -62,9 +73,11 @@ export default function AnalyseScreen({
             </p>
           ) : (
             <>
+              {/* The Forward, not Spot: the axis is in Forward, and a reference line
+                  has to stand on the axis it is drawn against (#72). */}
               <PayoffChart
                 curve={analysis.curve}
-                spot={analysis.spot}
+                forward={analysis.forward}
                 breakevens={analysis.metrics.breakevens}
               />
               <div className="tabs" role="tablist">
@@ -85,13 +98,15 @@ export default function AnalyseScreen({
                 <>
                   <GreeksTable legs={legs} rows={analysis.greeks} total={analysis.total_greeks} />
                   <p className="note">
-                    Per contract, no Lot Size. Δ and Γ carry the discount factor, so Δ is bounded
-                    by {analysis.discount.toFixed(6)} rather than by 1. Θ is one trading session.
+                    Per contract, no Lot Size. Δ and Γ are undiscounted, so Δ is bounded by 1 and
+                    a call's Δ less its put's is exactly 1. Θ is one trading session.
                   </p>
                 </>
               )}
 
-              {tab === "table" && <PayoffTable table={analysis.table} spot={analysis.spot} />}
+              {tab === "table" && (
+                <PayoffTable table={analysis.table} forward={analysis.forward} />
+              )}
             </>
           )}
         </main>
@@ -105,10 +120,14 @@ export default function AnalyseScreen({
             priced against is on screen beside it.
           */}
           <LegsStrip legs={legs} readOnly />
+          {/* Spot is still here, and deliberately (#72). It stopped being the axis; it
+              did not stop being observed, and it is the one figure on this line that is
+              measured rather than fitted. */}
           <p className="note">
             Forward {analysis.forward.toFixed(2)} · discount {analysis.discount.toFixed(6)} ·
-            spot {analysis.spot.toFixed(2)}. Every figure on this page came from one
-            request, so none of them can be as-of a different minute.
+            spot {analysis.spot.toFixed(2)}. The chart and the table are drawn in Forward.
+            Every figure on this page came from one request, so none of them can be as-of a
+            different minute.
           </p>
         </aside>
       </div>

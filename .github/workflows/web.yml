@@ -80,6 +80,15 @@ jobs:
         run: bunx playwright install --with-deps chromium
         working-directory: web
 
+      # The engine reads a derived tree and never derives at start-up (#66), so the
+      # tree must exist before it boots. Deliberately not a fallback inside the app:
+      # a missing tree is a broken deployment and should say so, not silently cost
+      # 1.4s on the request path.
+      - name: derive the runtime tree
+        run: python scripts/build_runtime.py
+        env:
+          PYTHONPATH: src
+
       - name: start the engine
         run: |
           python -m uvicorn payoff.api:app --port 8000 &

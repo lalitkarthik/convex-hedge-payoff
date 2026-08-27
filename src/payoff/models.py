@@ -45,6 +45,18 @@ Unbounded = Finite | None
 shown to a trader as "Unlimited" (CONTEXT.md); it is never an infinity token and never
 a string."""
 
+ExpiryLabel = str
+"""An Expiry, spelled the one way the wire spells it: `10FEB26` (#68, #71).
+
+The same text `ChainResponse.expiry` echoes, `SessionResponse.expiry` names, the dropdown
+renders, the URL carries and `/chain` accepts - so a client compares what it asked for
+against what it got without a conversion in the middle.
+
+Left as plain text rather than pinned to a pattern here. `catalog.parse_label` is what
+reads one, and it says `cannot read "10FEV26" as an Expiry; the form is 10FEB26`, which
+a regular expression in the schema would replace with the regular expression.
+"""
+
 
 class LegRequest(BaseModel):
     """A Leg as a client is allowed to describe it.
@@ -56,12 +68,20 @@ class LegRequest(BaseModel):
 
     Entry Premium is the one price a trader may legitimately supply (story 18, "what if
     I had entered at X"). Absent, the Chain's last traded price is used.
+
+    **The Expiry is carried here and is required** (#71). A strike and a side do not name
+    a contract once more than one series trades - 25200 CE is a different instrument in
+    each of them - so a Leg described without one is ambiguous the moment the store holds
+    a second Expiry, and an ambiguity resolved by a default is one nobody sees resolved.
+    The request no longer carries a single Expiry for the whole Strategy: this is the
+    smaller schema, and it is what a calendar structure will eventually need.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     strike: float
     option_type: OptionType
+    expiry: ExpiryLabel
     direction: Direction
     quantity: Quantity = 1
     entry_premium: float | None = None
@@ -70,14 +90,19 @@ class LegRequest(BaseModel):
 class Leg(BaseModel):
     """A single option contract within a Strategy.
 
-    Strike, type, direction, Quantity, the price it was entered at, and its implied
-    volatility - and **not** its Lot Size. Lot Size is a multiplier applied when
+    Strike, type, **Expiry**, direction, Quantity, the price it was entered at, and its
+    implied volatility - and **not** its Lot Size. Lot Size is a multiplier applied when
     results are presented, never a property stored here, because the exchange revises
     it and every stored Leg would be silently wrong the day it changes (CONTEXT.md).
+
+    The Expiry survives resolution rather than being consumed by it (#71): the strike and
+    the side alone do not say which contract was priced, and a resolved Leg that had
+    forgotten its series could not be told apart from one in another.
     """
 
     strike: float
     option_type: OptionType
+    expiry: ExpiryLabel
     direction: Direction
     quantity: Quantity
     entry_premium: float
@@ -94,6 +119,16 @@ class AnalysisRequest(BaseModel):
     The moment is what the whole response is served as-of - the Chain, the Entry
     Premiums and the volatilities all come from it, so it is asked for once here rather
     than per Leg.
+
+    **The Expiry is the other way round** (#71). It is a property of each Leg and not of
+    the request, because a moment is one thing a Strategy is looked at from and an Expiry
+    is one thing each contract in it has. Nothing here restates it, so nothing here can
+    contradict a Leg.
+
+    A Strategy whose Legs span more than one Expiry is **refused** - see
+    `strategy.sole_expiry`. Not refused here: the rule is about what can be drawn rather
+    than about what can be typed, and `strategy.MixedExpiry` says which two series were
+    named where a validation envelope would say `body -> legs`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -121,22 +156,34 @@ class Metrics(BaseModel):
 
 
 class Curve(BaseModel):
-    """The chart's line: P&L at Expiry across a range of Spot values.
+    """The chart's line: P&L at Expiry across a range of **Forward** values.
 
     Two parallel arrays, as the prototype in #9 published them and as a chart consumes
     them. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is
     premium-blind and is one subtraction away.
+
+    **The x-axis is the Forward, and this field is named for it** (#72). It was called
+    `spot` and it never carried one: every value here is read off corner points laid
+    down on a shared *Forward* domain (#70), and since #72 the window they span is
+    centred on the Forward as well. CONTEXT.md now says the same thing - the Forward is
+    the unit of the chart's x-axis and Spot is observed rather than derived - so the
+    glossary and the wire agree instead of contradicting each other quietly.
+
+    Quietly is the word: the basis is +118.87 at the anchor, so a Forward mislabelled
+    Spot is a plausible index level and nothing on screen looks wrong. A stale name that
+    reads as correct is the expensive kind. `AnalysisResponse.spot` is where a genuine
+    Spot still lives, and it is still published.
     """
 
-    spot: list[Finite]
+    forward: list[Finite]
     pnl_at_expiry: list[Finite]
 
     @model_validator(mode="after")
     def _same_length(self) -> "Curve":
         """Parallel arrays that disagree do not raise on a chart - they draw, slightly
         wrong, and nobody notices. So they cannot be built that way."""
-        if len(self.spot) != len(self.pnl_at_expiry):
-            raise ValueError("a curve needs one P&L for every Spot")
+        if len(self.forward) != len(self.pnl_at_expiry):
+            raise ValueError("a curve needs one P&L for every Forward")
         return self
 
 
@@ -148,14 +195,15 @@ class LegGreeks(BaseModel):
     another Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because
     that is what a per-Leg exposure row means to whoever reads it beside the Legs.
 
-    Conventions are stated once, in `pricing.black76_greeks`, and two of them surprise:
-    **delta and gamma carry the discount factor** (#53), and **theta is a one-session
-    repricing** rather than the analytic derivative.
+    Conventions are stated once, in `pricing.black76_greeks`. One of them surprises:
+    **theta is a one-session repricing** rather than the analytic derivative. Delta and
+    gamma are **undiscounted**, which is the Oracle's convention and the ordinary one.
     """
 
     delta: Finite
-    """Rupees per point of **forward**, never of spot. Bounded by `[0, D]` for a call and
-    `[-D, 0]` for a put - a delta of exactly 1 would mean an undiscounted payoff."""
+    """Rupees per point of **forward**, never of spot. Undiscounted, so bounded by
+    `[0, 1]` for a call and `[-1, 0]` for a put, and a call's delta and its put's differ
+    by exactly 1 at every strike."""
 
     gamma: Finite
     """Delta per point. Two orders of magnitude smaller than the rest at this expiry."""
@@ -182,12 +230,25 @@ class AnalysisResponse(BaseModel):
 
     moment: str
     spot: Finite
-    """The NIFTY level at the moment - what the header shows and the x-axis measures."""
+    """The NIFTY level at the moment - observed, never derived (CONTEXT.md).
+
+    **Still published, and no longer the axis** (#72). It used to be both: `curve` and
+    `table` were centred on this figure. They are centred on the Forward now, so this is
+    context a trader reads beside the Forward and the Discount Factor rather than
+    something a line is plotted against. Spot did not stop being observed when it stopped
+    being the x-axis, and a response that dropped it would lose the one number here that
+    is measured rather than fitted.
+    """
 
     forward: Finite
     """The Forward the Greeks were priced at, fitted from the quotes (#51). Published
     because a delta is meaningless without the underlying it is a slope against, and the
-    basis reaches +118.87 - the number is not spot."""
+    basis reaches +118.87 - the number is not spot.
+
+    **And the centre of the chart's window** (#72). `curve` and `table` run +/-6% either
+    side of this. Centring them on Spot was the last Spot-to-Forward conversion left in
+    the serving path - an unstated assumption that the basis is zero, worth 118.87 points
+    of shift at the anchor - and ADR-0001 exists to keep exactly that assumption out."""
 
     discount: Finite
     """The Discount Factor from the same fit. Delta and gamma carry it (#53)."""
@@ -195,12 +256,12 @@ class AnalysisResponse(BaseModel):
     curve: Curve
     metrics: Metrics
 
-    table: Curve = Curve(spot=[], pnl_at_expiry=[])
+    table: Curve = Curve(forward=[], pnl_at_expiry=[])
     """The Payoff Table (#29): the same P&L at Expiry, on the 50-point grid a trader
     reads, rather than the 400-point one the chart draws.
 
     The same `Curve` type as the chart deliberately - it is the same quantity sampled
-    twice, not two quantities, and the two must agree wherever they share a Spot. A type
+    twice, not two quantities, and the two must agree wherever they share a Forward. A type
     of its own would invite them to drift."""
 
     greeks: list[LegGreeks] = []
@@ -226,10 +287,16 @@ class ChainQuote(BaseModel):
     """How stale this bar is, in whole minutes. A quote is never from the future, and
     bars are one minute wide. #31 dims on it; this is where it is emitted."""
 
-    delta: Finite
+    delta: Finite | None = None
     """Per side, and genuinely so: a call and its put at one strike have deltas one
     apart rather than equal. That is the opposite of implied volatility, and the two
-    are easy to conflate."""
+    are easy to conflate.
+
+    Nullable for the same reason `ChainRow.iv` is, and always together with it: a delta
+    is priced at the strike's implied volatility, so a print that no volatility
+    reproduces has no delta either. Fabricating one would be worse than admitting it -
+    it is a number a trader would size a position against. Rare, and only away from the
+    anchor: 2 of 7 January's 244 bars and 58 of 10 February's 45,330."""
 
 
 class ChainRow(BaseModel):
@@ -263,9 +330,10 @@ class ChainResponse(BaseModel):
     forward: Finite
     """The Forward this moment implies, fitted from the quotes themselves (#51).
 
-    Not read from the file. `CONTEXT.md:138` - the engine that reads the Oracle to
-    produce an answer has lost the point of the project - so `chain.load_chain()` drops
-    the column outright and this number is recovered from put-call parity instead."""
+    Not read from the source file. `CONTEXT.md:138` - the engine that reads the Oracle
+    to produce an answer has lost the point of the project - so the build never opens the
+    file that carries it, and this number is recovered from put-call parity instead, in
+    the build that writes the store (#66, #67)."""
 
     discount: Finite
     """The Discount Factor for the same moment, recovered alongside the Forward from the
@@ -280,6 +348,54 @@ class ChainResponse(BaseModel):
     rows: list[ChainRow]
 
 
+class SummaryResponse(BaseModel):
+    """The header, at one minute - and nothing about any strike (#69).
+
+    Spot, the Forward, the Discount Factor and the at-the-money volatility are facts about
+    the **minute**. In the stored Chain they repeat across every strike of that minute, so
+    a header that read them there opened the largest artifact in the tree to take four
+    numbers out of about 196 identical copies of each. They are stored once instead, one
+    row a minute, and this is that row on the wire.
+
+    Dragging the time control moves the header 375 times across a session. Every one of
+    those was a read of the Chain and is now a lookup.
+
+    **Every figure here is the one `/chain` publishes for the same minute.** That is not a
+    coincidence to be checked occasionally, it is the reason the split is safe: the build
+    reduces the Chain frame it is about to write, so there is no second derivation that
+    could drift. Two artifacts describing one minute that can disagree would be worse than
+    one artifact.
+    """
+
+    moment: str
+    """Echoed back as it was asked for, exactly as `ChainResponse.moment` is - a client
+    that compares the two must find them equal on both endpoints or on neither."""
+
+    date: str
+    expiry: str
+    """The pair this row belongs to, spelled as `/session` and `/chain` spell them."""
+
+    spot: Finite
+    forward: Finite
+    discount: Finite
+    forward_method: ForwardMethod
+    """The same four the Chain carries, from the same minute and the same fit."""
+
+    atm_strike: Finite
+    """The quoted strike nearest the **Forward** - not nearest Spot. The basis reaches
+    +118.87 at the anchor, more than two 50-point intervals, so the two anchors pick
+    different strikes. Published because the volatility below is meaningless without the
+    strike it belongs to."""
+
+    atm_iv: Finite | None = None
+    """That strike's implied volatility, by the same rule `ChainRow.iv` follows: one per
+    strike, from its freshest quote.
+
+    Nullable for the reason `ChainRow.iv` is nullable - a print that no volatility
+    reproduces has none, and every strike in the last minute of Expiry day is such a
+    print. `None` is the honest answer where a fabricated number would be read as one."""
+
+
 class SessionResponse(BaseModel):
     """What a client needs before it can ask for anything else.
 
@@ -290,7 +406,28 @@ class SessionResponse(BaseModel):
 
     Bounds and counts as well as the list itself, because a slider needs its ends and a
     trader reading "376" learns something the array does not tell them at a glance.
+
+    A session is **one date and one Expiry** (#68), and it carries the two lists a client
+    picks the next one from. That is what makes the dropdowns above the Chain open
+    without reading a data file, and it is the same argument as the paragraph above: a
+    list of dates written by a build script is a list that can drift from the tree the
+    engine will actually serve.
+
+    `date` and `expiry` name the pair this response describes, and they are **not
+    necessarily the pair that was asked for**. A request naming a date and an Expiry that
+    date did not trade is resolved to one that exists rather than refused, so a client
+    renders these two fields rather than what it sent.
     """
+
+    date: str
+    """The trading date this session describes, ISO 8601, as `/chain` accepts it."""
+
+    dates: list[str]
+    """Every trading date in the store, ascending. What the date dropdown lists.
+
+    Off the manifest rather than off a directory walk or a clock: it is the index over
+    the partitions, and it is written last by the build so it cannot advertise a day that
+    is no longer stored."""
 
     moments: list[str]
     """Every minute that quoted, in session order, spelled as `/chain` accepts it.
@@ -303,7 +440,16 @@ class SessionResponse(BaseModel):
     last_moment: str
 
     expiry: str
-    """The single Expiry this dataset contains - text, not a dropdown."""
+    """The Expiry this session describes, spelled as `ChainResponse.expiry` spells it -
+    `10FEB26` - so a client can compare the two without a conversion in the middle."""
+
+    expiries: list[str]
+    """Every Expiry that traded on `date`, ascending. What the Expiry dropdown lists.
+
+    Only the ones that traded **that day**, which is the point: a dropdown offering a
+    pair the store does not hold fails at the moment a trader clicks, three screens from
+    the code that offered it. One Expiry exists in this dataset, so this has one entry;
+    nothing that produces or consumes it is allowed to assume that."""
 
     strike_min: Finite
     strike_max: Finite

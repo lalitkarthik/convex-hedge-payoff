@@ -11,14 +11,19 @@ built. Design decisions live in the issues; architectural ones live in `docs/adr
 ## The underlying
 
 **Spot**:
-The NIFTY 50 index level. The unit of the payoff chart's x-axis, and the only price a user
-ever reads or types.
+The NIFTY 50 index level. Observed, not derived. It is context a user reads - the header
+shows it - and it is **not** the unit of the chart's x-axis. That is the Forward.
 _Avoid_: Underlying price, index price, cash price
 
 **Forward**:
 The break-even future price of the index implied by the option chain itself, for a given
 expiry. This is the price the pricing model consumes; Spot is not. It is derived from the
 chain, not observed, and on a thin chain it may not be recoverable at all.
+
+It is also **the unit of the payoff chart's x-axis**. Every calculation in this project is
+carried in Forward from end to end, so no Spot-to-Forward conversion exists anywhere and no
+Basis has to be assumed to hold while a user drags the Target Date. `ADR-0001` already put
+the core on the Forward; this entry extends that to the chart.
 _Avoid_: Futures price, fair value, synthetic future
 
 **Basis**:
@@ -47,9 +52,14 @@ _Avoid_: Valuation date, as-of date
 ## Structure
 
 **Leg**:
-A single option contract within a Strategy: its strike, its type (call or put), its direction
-(bought or sold), its Quantity, the price it was entered at, and its implied volatility. A Leg
-does **not** know its Lot Size.
+A single option contract within a Strategy: its strike, its type (call or put), its **Expiry**,
+its direction (bought or sold), its Quantity, the price it was entered at, and its implied
+volatility. A Leg does **not** know its Lot Size.
+
+The Expiry is carried on the Leg and not on the Strategy, because a strike and a type name two
+different instruments once two series trade. A Strategy whose Legs span more than one Expiry is
+**refused**: at the near Expiry the far Leg has not expired, so it has a price rather than a
+Payoff, and there is no single Expiry line for such a Strategy to have.
 _Avoid_: Position, contract, trade
 
 **Quantity**:
@@ -114,19 +124,19 @@ The Entry Premiums of every Leg in a Strategy, summed with direction. Positive m
 _Avoid_: Cost of the strategy, net cost
 
 **Breakeven**:
-A Spot at which the **Expiry** P&L of a Strategy is zero. A fixed property of the Legs, so it does
+A Forward at which the **Expiry** P&L of a Strategy is zero. A fixed property of the Legs, so it does
 not move while a user drags the Target Date slider. A Strategy may have none, one, or several.
 _Avoid_: Break-even point, BEP, zero crossing
 
 **Target-Date Crossing**:
-A Spot at which the P&L *on the Target Date* is zero. A different quantity from a Breakeven — it
-moves continuously as the Target Date changes, and the two sit at different Spots on the chart.
+A Forward at which the P&L *on the Target Date* is zero. A different quantity from a Breakeven — it
+moves continuously as the Target Date changes, and the two sit at different Forwards on the chart.
 The word "breakeven" is never used for it, because a label that means two numbers means neither.
 
 **Unbounded**:
 The state of a maximum profit or maximum loss that has no finite value, shown to a user as
 "Unlimited". Either can be Unbounded, but only ever through the right-hand tail: the left-hand
-tail always terminates, because Spot cannot fall below zero.
+tail always terminates, because the Forward cannot fall below zero.
 _Avoid_: Unlimited (in code), infinite, None
 
 ## Data

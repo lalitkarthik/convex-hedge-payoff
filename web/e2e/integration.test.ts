@@ -83,7 +83,7 @@ describe("the Chain page", () => {
     await page.locator("tr.at-the-money .bs button.sell").first().click();
     await page.waitForFunction(() => window.location.search.includes("legs="));
 
-    expect(decodeURIComponent(page.url())).toContain("25200CES1@344.05");
+    expect(decodeURIComponent(page.url())).toContain("25200CE10FEB26S1@344.05");
 
     await page.reload({ waitUntil: "networkidle" });
     expect(await page.locator(".legs .leg").count()).toBe(1);
@@ -91,7 +91,7 @@ describe("the Chain page", () => {
 });
 
 describe("the Analyse page", () => {
-  const STRADDLE = "25200CES1@344.05,25200PES1@326.7";
+  const STRADDLE = "25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7";
 
   it("reproduces the whole Strategy from a cold URL", async () => {
     // The heart of #32: no click path, no store, no session - just the link. This is the
@@ -132,10 +132,28 @@ describe("the Analyse page", () => {
     expect(peak).toContain("670.75");
   });
 
+  it("labels both axes Forward, because that is what they plot", async () => {
+    // #72: the wire stopped calling these numbers `spot`, so the screen has to stop too.
+    // A renamed field under a stale label fixes nothing for whoever is reading the chart,
+    // and the label is the only place the unit is visible: 25,200 is a plausible Spot and
+    // an equally plausible Forward, and the two are 118.87 apart at this minute.
+    //
+    // The Payoff Table tab is the one the test above left open.
+    // innerText returns text as rendered, and the header is uppercased in CSS, so this
+    // compares case-insensitively: the assertion is about the word, not the styling.
+    const heading = await page.locator("table.grid thead").innerText();
+    expect(heading.toLowerCase()).toContain("forward at expiry");
+    expect(heading.toLowerCase()).not.toContain("spot");
+
+    // The chart sits above the tabs and is rendered whichever one is selected.
+    const chart = await page.locator("svg.recharts-surface").textContent();
+    expect(chart).toContain("Forward at expiry");
+  });
+
   it("refuses a link it cannot read, rather than analysing part of one", async () => {
     // Nine legs truncated to eight and a half by a chat client is the realistic case.
     // A chart of the eight that parsed would be wrong with nothing on screen saying so.
-    await page.goto(`${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=25200CES1,garbage`, {
+    await page.goto(`${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=25200CE10FEB26S1,garbage`, {
       waitUntil: "networkidle",
     });
 

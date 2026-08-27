@@ -1,8 +1,8 @@
 import ChainScreen from "@/components/ChainScreen";
 import LinkProblem from "@/components/LinkProblem";
-import { getChain, getSession } from "@/lib/api";
+import { getChain, getSession, getSummary } from "@/lib/api";
 import { LegsUrlError } from "@/lib/legs-url";
-import { decodeLegs, one, pickMoment } from "@/lib/strategy-url";
+import { decodeLegs, one, pickView } from "@/lib/strategy-url";
 
 /**
  * **The Chain.** Where a Strategy is built.
@@ -31,18 +31,32 @@ export default async function ChainPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const session = await getSession();
-  const moment = pickMoment(session, one(params.moment));
+
+  // The session is asked for the pair the link named and answers with one the store
+  // holds (#68). Everything below renders *its* answer, so a link naming a date that was
+  // never built, or an Expiry that date never traded, opens on a real Chain rather than
+  // an empty one — and the dropdowns show the pair actually on screen.
+  const session = await getSession(one(params.date), one(params.expiry));
+  const view = pickView(session, one(params.moment));
 
   let legs;
   try {
     legs = decodeLegs(one(params.legs));
   } catch (error) {
     if (!(error instanceof LegsUrlError)) throw error;
-    return <LinkProblem message={error.message} moment={moment} />;
+    return <LinkProblem message={error.message} view={view} />;
   }
 
-  const chain = await getChain(moment);
+  // Two requests, and they answer different questions. The header's four figures belong
+  // to the *minute* and come out of the 375-row-a-day summary (#69); the table is the
+  // minute's ~196 strike rows and is the only thing here that opens the Chain. Moving the
+  // time control used to make the header wait on the second of these.
+  const [summary, chain] = await Promise.all([
+    getSummary(view.moment, view.date, view.expiry),
+    getChain(view.moment, view.date, view.expiry),
+  ]);
 
-  return <ChainScreen session={session} chain={chain} legs={legs} />;
+  return (
+    <ChainScreen session={session} summary={summary} chain={chain} view={view} legs={legs} />
+  );
 }

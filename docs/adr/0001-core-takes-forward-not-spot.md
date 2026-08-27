@@ -1,7 +1,8 @@
 # The pricing core takes a forward and a discount factor, never a spot and a rate
 
-The payoff chart's x-axis is **spot**, so the obvious core signature is
-`price(spot, strike, T, rate, vol, is_call)`. We rejected it. The core takes
+The payoff chart's x-axis was **spot** when this was written, so the obvious core
+signature is `price(spot, strike, T, rate, vol, is_call)`. We rejected it. (The axis has
+since moved to the forward as well - see the amendment at the foot of this file.) The core takes
 `(forward, strike, T, vol, discount, is_call)`, and converting a hypothetical spot into
 a forward is the strategy layer's job — the core never sees a spot.
 
@@ -43,3 +44,21 @@ reasons invisible at the call site.
   whose job is arithmetic.
 - **`price(spot, ...)` with the rate passed in.** Rejected: it still needs a carry rule to
   get from spot to forward, and it invites callers to pass the unstable implied `r`.
+
+## Amendment - the chart followed the core (#64, #72)
+
+The premise above no longer holds, and the decision is stronger for it. `CONTEXT.md` now
+names the **forward** as the unit of the payoff chart's x-axis and describes spot as
+observed rather than derived, and #72 renamed the response fields that carried a forward
+under the name `spot` so the wire says the same word.
+
+So the consequence recorded above - "the spot-to-forward rule (#13) lives above the seam,
+in `strategy.py`" - is now that **no such rule is called anywhere in the serving path**.
+The chart's window is centred on the fitted forward, the stored corner points sit on a
+shared forward domain, and #13 stays open without anything waiting on it. Nothing in the
+decision itself is revised: the core still takes `(forward, strike, T, vol, discount,
+is_call)`, and `tests/test_oracle.py` still asserts that signature.
+
+Spot has not left the interfaces. It is still observed, still published on `/summary`,
+`/chain` and `/analyse`, and still on the header a trader reads. It is simply no longer
+what anything is plotted against.

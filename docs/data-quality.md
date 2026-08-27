@@ -104,6 +104,19 @@ This distinction is what stops the engine cheating its own test. Columns split i
 
 `strike` · `option_type` · `dte_days` · spot (from `index.parquet`)
 
+`dte_days` is the odd one out: it is a model input that lives in the **oracle** file, so until
+[#67](https://github.com/lalitkarthik/convex-hedge-payoff/issues/67) reading it was the one thread
+still running from `greeks.parquet` into the engine — and it snapped on the three dates that file is
+missing or thin on. §3 below turns out to describe the column completely enough to rebuild, so
+`payoff/seed.py` rebuilds it from the session calendar and the minute of the day. The reconstruction
+is **bit-identical** to the vendor's on all 517,672 rows it publishes; `tests/test_seed.py` asserts
+that with `np.array_equal`, not a tolerance.
+
+The upshot is that **nothing under `src/` or `scripts/` opens `greeks.parquet` at all.** The guard
+used to be `derive.load_chain()` dropping the graded columns on the way in; it is now that the file
+is never read outside `tests/`, which is a stronger claim and a more fragile one — so it is asserted
+directly, over the parsed source of every module in both directories.
+
 **Oracle outputs** — the engine computes these itself and is graded against them; it must never read them:
 
 `forward` · `discount` · `iv` · `delta` · `gamma` · `theta` · `vega` · `rho` · `vanna` · `volga` · `charm`
@@ -112,8 +125,7 @@ This distinction is what stops the engine cheating its own test. Columns split i
 which taught the engine to recover them from put-call parity (`docs/calculations.md` §1). Read
 the distinction carefully, because it is easy to overstate: a forward and a discount factor are
 still exactly what the pricing core wants as **arguments**, per ADR-0001. What changed is where
-they may come from. Sourcing them from this file is now the thing that is banned, and
-`chain.load_chain()` drops both columns at load so it cannot happen by accident. They are opened
+they may come from. Sourcing them from this file is now the thing that is banned. They are opened
 in `tests/test_forward.py` and nowhere else.
 
 **Market observables** — real prices, used to solve IV and to check repricing:
@@ -123,9 +135,8 @@ in `tests/test_forward.py` and nowhere else.
 `iv` used to sit awkwardly between the groups, listed as a model input on the grounds that it is what
 the Greeks are tested against. [#52](https://github.com/lalitkarthik/convex-hedge-payoff/issues/52)
 settled it: **`iv` is not an input.** It is a solved quantity, the engine solves it from `last`
-(`docs/calculations.md` §4), and `chain.load_chain()` drops the column alongside `forward` and
-`discount` so it cannot be read by accident. It is opened in `tests/test_implied_vol.py` and
-nowhere else in the tree.
+(`docs/calculations.md` §4). It is opened in `tests/test_implied_vol.py` and nowhere else in the
+tree.
 
 The same nuance applies as to `forward` and `discount`, and it is easy to overstate the ban. A
 volatility is still exactly what `black76_greeks` wants as an **argument**, and a *test* may still

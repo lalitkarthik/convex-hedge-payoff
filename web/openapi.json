@@ -3,7 +3,7 @@
     "schemas": {
       "AnalysisRequest": {
         "additionalProperties": false,
-        "description": "Analyse one Strategy, as-of one moment.\n\nThere is no Strategy type: a Strategy is an ordered list of Legs and nothing more\n(CONTEXT.md). The order is the order the trader built them in, and it is preserved\nbecause the per-Leg Greeks table (#27) is read alongside the Legs on screen.\n\nThe moment is what the whole response is served as-of - the Chain, the Entry\nPremiums and the volatilities all come from it, so it is asked for once here rather\nthan per Leg.",
+        "description": "Analyse one Strategy, as-of one moment.\n\nThere is no Strategy type: a Strategy is an ordered list of Legs and nothing more\n(CONTEXT.md). The order is the order the trader built them in, and it is preserved\nbecause the per-Leg Greeks table (#27) is read alongside the Legs on screen.\n\nThe moment is what the whole response is served as-of - the Chain, the Entry\nPremiums and the volatilities all come from it, so it is asked for once here rather\nthan per Leg.\n\n**The Expiry is the other way round** (#71). It is a property of each Leg and not of\nthe request, because a moment is one thing a Strategy is looked at from and an Expiry\nis one thing each contract in it has. Nothing here restates it, so nothing here can\ncontradict a Leg.\n\nA Strategy whose Legs span more than one Expiry is **refused** - see\n`strategy.sole_expiry`. Not refused here: the rule is about what can be drawn rather\nthan about what can be typed, and `strategy.MixedExpiry` says which two series were\nnamed where a validation envelope would say `body -> legs`.",
         "properties": {
           "legs": {
             "items": {
@@ -60,8 +60,8 @@
           "table": {
             "$ref": "#/components/schemas/Curve",
             "default": {
-              "pnl_at_expiry": [],
-              "spot": []
+              "forward": [],
+              "pnl_at_expiry": []
             }
           },
           "total_greeks": {
@@ -95,8 +95,15 @@
             "type": "integer"
           },
           "delta": {
-            "title": "Delta",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
           },
           "last": {
             "title": "Last",
@@ -115,8 +122,7 @@
           "last",
           "open_interest",
           "volume",
-          "age_minutes",
-          "delta"
+          "age_minutes"
         ],
         "title": "ChainQuote",
         "type": "object"
@@ -219,25 +225,25 @@
         "type": "object"
       },
       "Curve": {
-        "description": "The chart's line: P&L at Expiry across a range of Spot values.\n\nTwo parallel arrays, as the prototype in #9 published them and as a chart consumes\nthem. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is\npremium-blind and is one subtraction away.",
+        "description": "The chart's line: P&L at Expiry across a range of **Forward** values.\n\nTwo parallel arrays, as the prototype in #9 published them and as a chart consumes\nthem. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is\npremium-blind and is one subtraction away.\n\n**The x-axis is the Forward, and this field is named for it** (#72). It was called\n`spot` and it never carried one: every value here is read off corner points laid\ndown on a shared *Forward* domain (#70), and since #72 the window they span is\ncentred on the Forward as well. CONTEXT.md now says the same thing - the Forward is\nthe unit of the chart's x-axis and Spot is observed rather than derived - so the\nglossary and the wire agree instead of contradicting each other quietly.\n\nQuietly is the word: the basis is +118.87 at the anchor, so a Forward mislabelled\nSpot is a plausible index level and nothing on screen looks wrong. A stale name that\nreads as correct is the expensive kind. `AnalysisResponse.spot` is where a genuine\nSpot still lives, and it is still published.",
         "properties": {
+          "forward": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Forward",
+            "type": "array"
+          },
           "pnl_at_expiry": {
             "items": {
               "type": "number"
             },
             "title": "Pnl At Expiry",
             "type": "array"
-          },
-          "spot": {
-            "items": {
-              "type": "number"
-            },
-            "title": "Spot",
-            "type": "array"
           }
         },
         "required": [
-          "spot",
+          "forward",
           "pnl_at_expiry"
         ],
         "title": "Curve",
@@ -257,7 +263,7 @@
         "type": "object"
       },
       "LegGreeks": {
-        "description": "One Leg's exposures, or a whole Strategy's - the shape is the same either way.\n\n**Per contract**: no Lot Size and no number of lots. Those are presentation\nmultipliers (#29) and a Greek that carried them could not be compared against\nanother Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because\nthat is what a per-Leg exposure row means to whoever reads it beside the Legs.\n\nConventions are stated once, in `pricing.black76_greeks`, and two of them surprise:\n**delta and gamma carry the discount factor** (#53), and **theta is a one-session\nrepricing** rather than the analytic derivative.",
+        "description": "One Leg's exposures, or a whole Strategy's - the shape is the same either way.\n\n**Per contract**: no Lot Size and no number of lots. Those are presentation\nmultipliers (#29) and a Greek that carried them could not be compared against\nanother Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because\nthat is what a per-Leg exposure row means to whoever reads it beside the Legs.\n\nConventions are stated once, in `pricing.black76_greeks`. One of them surprises:\n**theta is a one-session repricing** rather than the analytic derivative. Delta and\ngamma are **undiscounted**, which is the Oracle's convention and the ordinary one.",
         "properties": {
           "delta": {
             "title": "Delta",
@@ -292,7 +298,7 @@
       },
       "LegRequest": {
         "additionalProperties": false,
-        "description": "A Leg as a client is allowed to describe it.\n\nDeliberately narrower than a `Leg`: there is no implied volatility here, because\nthe server looks it up (#23). A wrong volatility does not fail loudly - it produces\na plausible chart that nothing downstream would catch - so the field does not exist\nto be got wrong, and unknown fields are rejected rather than ignored.\n\nEntry Premium is the one price a trader may legitimately supply (story 18, \"what if\nI had entered at X\"). Absent, the Chain's last traded price is used.",
+        "description": "A Leg as a client is allowed to describe it.\n\nDeliberately narrower than a `Leg`: there is no implied volatility here, because\nthe server looks it up (#23). A wrong volatility does not fail loudly - it produces\na plausible chart that nothing downstream would catch - so the field does not exist\nto be got wrong, and unknown fields are rejected rather than ignored.\n\nEntry Premium is the one price a trader may legitimately supply (story 18, \"what if\nI had entered at X\"). Absent, the Chain's last traded price is used.\n\n**The Expiry is carried here and is required** (#71). A strike and a side do not name\na contract once more than one series trades - 25200 CE is a different instrument in\neach of them - so a Leg described without one is ambiguous the moment the store holds\na second Expiry, and an ambiguity resolved by a default is one nobody sees resolved.\nThe request no longer carries a single Expiry for the whole Strategy: this is the\nsmaller schema, and it is what a calendar structure will eventually need.",
         "properties": {
           "direction": {
             "enum": [
@@ -312,6 +318,10 @@
               }
             ],
             "title": "Entry Premium"
+          },
+          "expiry": {
+            "title": "Expiry",
+            "type": "string"
           },
           "option_type": {
             "enum": [
@@ -335,6 +345,7 @@
         "required": [
           "strike",
           "option_type",
+          "expiry",
           "direction"
         ],
         "title": "LegRequest",
@@ -424,8 +435,26 @@
         "type": "object"
       },
       "SessionResponse": {
-        "description": "What a client needs before it can ask for anything else.\n\nEvery other endpoint takes a `moment`, and until this existed there was no way to\nlearn which moments there are. The frontend held the list in a generated fixture\ninstead, which made the set of tradeable minutes a property of a build script rather\nthan of the data - and free to drift from it silently.\n\nBounds and counts as well as the list itself, because a slider needs its ends and a\ntrader reading \"376\" learns something the array does not tell them at a glance.",
+        "description": "What a client needs before it can ask for anything else.\n\nEvery other endpoint takes a `moment`, and until this existed there was no way to\nlearn which moments there are. The frontend held the list in a generated fixture\ninstead, which made the set of tradeable minutes a property of a build script rather\nthan of the data - and free to drift from it silently.\n\nBounds and counts as well as the list itself, because a slider needs its ends and a\ntrader reading \"376\" learns something the array does not tell them at a glance.\n\nA session is **one date and one Expiry** (#68), and it carries the two lists a client\npicks the next one from. That is what makes the dropdowns above the Chain open\nwithout reading a data file, and it is the same argument as the paragraph above: a\nlist of dates written by a build script is a list that can drift from the tree the\nengine will actually serve.\n\n`date` and `expiry` name the pair this response describes, and they are **not\nnecessarily the pair that was asked for**. A request naming a date and an Expiry that\ndate did not trade is resolved to one that exists rather than refused, so a client\nrenders these two fields rather than what it sent.",
         "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "expiries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Expiries",
+            "type": "array"
+          },
           "expiry": {
             "title": "Expiry",
             "type": "string"
@@ -467,16 +496,84 @@
           }
         },
         "required": [
+          "date",
+          "dates",
           "moments",
           "moment_count",
           "first_moment",
           "last_moment",
           "expiry",
+          "expiries",
           "strike_min",
           "strike_max",
           "presets"
         ],
         "title": "SessionResponse",
+        "type": "object"
+      },
+      "SummaryResponse": {
+        "description": "The header, at one minute - and nothing about any strike (#69).\n\nSpot, the Forward, the Discount Factor and the at-the-money volatility are facts about\nthe **minute**. In the stored Chain they repeat across every strike of that minute, so\na header that read them there opened the largest artifact in the tree to take four\nnumbers out of about 196 identical copies of each. They are stored once instead, one\nrow a minute, and this is that row on the wire.\n\nDragging the time control moves the header 375 times across a session. Every one of\nthose was a read of the Chain and is now a lookup.\n\n**Every figure here is the one `/chain` publishes for the same minute.** That is not a\ncoincidence to be checked occasionally, it is the reason the split is safe: the build\nreduces the Chain frame it is about to write, so there is no second derivation that\ncould drift. Two artifacts describing one minute that can disagree would be worse than\none artifact.",
+        "properties": {
+          "atm_iv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atm Iv"
+          },
+          "atm_strike": {
+            "title": "Atm Strike",
+            "type": "number"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "discount": {
+            "title": "Discount",
+            "type": "number"
+          },
+          "expiry": {
+            "title": "Expiry",
+            "type": "string"
+          },
+          "forward": {
+            "title": "Forward",
+            "type": "number"
+          },
+          "forward_method": {
+            "enum": [
+              "parity_fit",
+              "single_strike_parity",
+              "spot"
+            ],
+            "title": "Forward Method",
+            "type": "string"
+          },
+          "moment": {
+            "title": "Moment",
+            "type": "string"
+          },
+          "spot": {
+            "title": "Spot",
+            "type": "number"
+          }
+        },
+        "required": [
+          "moment",
+          "date",
+          "expiry",
+          "spot",
+          "forward",
+          "discount",
+          "forward_method",
+          "atm_strike"
+        ],
+        "title": "SummaryResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -529,7 +626,7 @@
   "paths": {
     "/analyse": {
       "post": {
-        "description": "Everything about one Strategy, as-of one moment, in one response.",
+        "description": "Everything about one Strategy, as-of one moment, in one response.\n\nThe Expiry comes off the **Legs** (#71) and the request no longer carries one. It is\nsettled before anything is read, because it is what the reads are keyed by: the header\nfigures below belong to one series at one minute, and a Strategy that named two would\notherwise take them from whichever the store listed first.\n\n**The chart and the table are centred on the Forward, not on Spot** (#72). They were\ncentred on Spot, which is a Spot-to-Forward conversion with the basis silently assumed\nto be zero - and it is +118.87 here, so the window sat two strike intervals to the\nleft of the axis it was plotted against. `spot` is still published, because Spot is\nstill observed and the screen still prints it; it is simply not what anything is\nplotted against any more.",
         "operationId": "analyse_analyse_post",
         "requestBody": {
           "content": {
@@ -568,7 +665,7 @@
     },
     "/chain": {
       "get": {
-        "description": "The Chain as-of a moment: one row per strike, call and put either side.",
+        "description": "The Chain as-of a moment: one row per strike, call and put either side.\n\n`date` is the trading date, which is what the store is keyed by and what a link\ncarries now that a control picks one (#68). Omitted, it is taken off the moment: the\nsession runs 03:45 to 10:00 UTC, so it never crosses a midnight and the two cannot\ndisagree. Naming it is what makes the twenty-three days #67 built reachable without a\nclient having to know that.\n\n`expiry` is the other partition key, spelled as the response spells it - `10FEB26`.\nOmitted, the Chain covers every series that traded that day, which is what it meant\nbefore there was a second dropdown to name one. Named, it covers exactly one; the day\na second series exists, the difference is a Chain against two interleaved, and\nnothing on screen would say which was being read.\n\n**Strict, unlike `/session`.** A pair the store does not hold is a 404 naming what it\ndoes hold, not a quiet substitution: a Chain that is not the one that was asked for\nis indistinguishable from one that is.",
         "operationId": "read_chain_chain_get",
         "parameters": [
           {
@@ -578,6 +675,38 @@
             "schema": {
               "title": "Moment",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
             }
           }
         ],
@@ -627,7 +756,7 @@
     },
     "/presets/{name}": {
       "get": {
-        "description": "The Legs a Preset builds, as a trader would have picked them by hand.\n\nReturned as requests rather than analysed here, so that choosing a Preset and\npicking its Legs off the Chain are the same operation and not two paths that agree.",
+        "description": "The Legs a Preset builds, as a trader would have picked them by hand.\n\nReturned as requests rather than analysed here, so that choosing a Preset and\npicking its Legs off the Chain are the same operation and not two paths that agree.\n\n`date` and `expiry` name the series the Legs are built in, spelled as `/chain` spells\nthem, because a Leg carries its own Expiry now (#71) and a Preset is a shape rather\nthan a set of contracts. Omitted, they are the Chain's own answer for this minute -\nnot a constant, which would hand a trader Legs in a series they are not looking at.",
         "operationId": "build_preset_presets__name__get",
         "parameters": [
           {
@@ -646,6 +775,38 @@
             "schema": {
               "title": "Moment",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
             }
           },
           {
@@ -712,8 +873,42 @@
     },
     "/session": {
       "get": {
-        "description": "The day itself: which minutes exist, what expires, and what the picker offers.\n\nAsked once, at boot. Everything else takes a `moment`, and this is the only way to\nlearn which moments there are - so it is served from the data rather than from a\nclock, and a client that renders 376 stops is rendering 376 minutes that quoted.",
+        "description": "One day and one Expiry: which minutes exist, what else exists, what the picker offers.\n\nAsked whenever either dropdown moves. Everything else takes a `moment`, and this is\nthe only way to learn which moments there are - so it is served from the data rather\nthan from a clock, and a client that renders 376 stops is rendering 376 minutes that\nquoted. `dates` and `expiries` are the same argument one level up (#68): the two\ndropdowns are populated from here and never from a file, because a generated list is\nfree to describe a day the engine would not serve.\n\n**The pair is resolved, not merely validated.** A trader changes the date and the\nExpiry in the URL is one interaction behind; `catalog.resolve` returns a pair the\nstore actually holds, and `date` and `expiry` in the response say which - so what\ncomes back is never an empty Chain and never a session describing a day `/chain`\nwould refuse. `/chain` itself is strict, because it is asked for one specific thing.",
         "operationId": "read_session_session_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -724,9 +919,91 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Read Session"
+      }
+    },
+    "/summary": {
+      "get": {
+        "description": "The header at one minute: Spot, the Forward, the Discount Factor, the money (#69).\n\n**This is what moving the time control asks for.** The four figures belong to the\nminute rather than to a strike, and in the stored Chain they repeat across every one\nof that minute's ~196 rows; a drag across a session asked for them 375 times and\nopened the million-row artifact 375 times to do it. They live in a 375-row-a-day\nSummary now, and this reads one row of it. Nothing under this endpoint opens the Chain.\n\nSame keys and same rules as `/chain`: `date` off the moment when it is omitted,\n`expiry` spelled `10FEB26`, and **strict** - a pair the store does not hold is a 404\nnaming what it does, never a quiet substitution.\n\nThe numbers are the ones `/chain` publishes for the same minute, and by construction\nrather than by coincidence: the build reduces the Chain frame it is about to write.",
+        "operationId": "read_summary_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "moment",
+            "required": true,
+            "schema": {
+              "title": "Moment",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Summary"
       }
     }
   }

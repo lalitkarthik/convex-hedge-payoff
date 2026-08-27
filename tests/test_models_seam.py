@@ -32,10 +32,16 @@ def test_a_leg_carries_its_own_terms_and_never_its_lot_size():
     Lot Size is a presentation multiplier the exchange revises - 65 for NIFTY today.
     Storing it on a Leg would make every stored Leg silently wrong the day it changes,
     so it is applied where results are presented and is absent from the type itself.
+
+    The **Expiry** is the other way round (#71): it is a term of the contract, so it is
+    carried here. A strike and a side name two different instruments once two series
+    trade, and a Leg that had to be told which one from outside would be describing a
+    contract it did not identify.
     """
     leg = Leg(
         strike=25200.0,
         option_type="CE",
+        expiry="10FEB26",
         direction=1,
         quantity=1,
         entry_premium=344.05,
@@ -44,6 +50,7 @@ def test_a_leg_carries_its_own_terms_and_never_its_lot_size():
 
     assert leg.strike == 25200.0
     assert leg.option_type == "CE"
+    assert leg.expiry == "10FEB26", "the one spelling the wire uses, not a Date"
     assert leg.direction == 1
     assert leg.quantity == 1
     assert leg.entry_premium == 344.05
@@ -63,6 +70,7 @@ def test_direction_is_separate_from_quantity_and_a_leg_is_never_negative():
     sold = Leg(
         strike=25200.0,
         option_type="PE",
+        expiry="10FEB26",
         direction=-1,
         quantity=2,
         entry_premium=326.70,
@@ -77,6 +85,7 @@ def test_direction_is_separate_from_quantity_and_a_leg_is_never_negative():
                 **{
                     "strike": 25200.0,
                     "option_type": "PE",
+                    "expiry": "10FEB26",
                     "direction": -1,
                     "quantity": 2,
                     "entry_premium": 326.70,
@@ -97,7 +106,7 @@ def test_a_client_cannot_supply_implied_volatility():
     Entry Premium is the one price a trader may legitimately supply (story 18, 'what if
     I had entered at X'). It is optional: absent means the Chain's last traded price.
     """
-    request = LegRequest(strike=25200.0, option_type="CE", direction=1)
+    request = LegRequest(strike=25200.0, option_type="CE", expiry="10FEB26", direction=1)
     assert request.quantity == 1, "one contract is the sensible default"
     assert request.entry_premium is None, "absent means take the Chain's last traded price"
 
@@ -105,7 +114,32 @@ def test_a_client_cannot_supply_implied_volatility():
 
     for smuggled in ({"iv": 0.01}, {"implied_volatility": 0.01}, {"lot_size": 65}):
         with pytest.raises(ValidationError):
-            LegRequest(strike=25200.0, option_type="CE", direction=1, **smuggled)
+            LegRequest(
+                strike=25200.0, option_type="CE", expiry="10FEB26", direction=1, **smuggled
+            )
+
+
+def test_the_expiry_is_on_the_leg_and_the_request_has_nowhere_to_put_one():
+    """#71: 'A Leg carries an Expiry; the analyse request no longer does.'
+
+    Two claims, and the second is the one that is easy to lose. A request field that is
+    accepted and ignored is worse than one that is refused: a caller who names an Expiry
+    at the top level and has it dropped believes every Leg is in it, and the Legs are in
+    whatever their own field said. `extra="forbid"` is what makes that impossible.
+
+    The Expiry is **required** on the Leg. A default would be the ambiguity this ticket
+    removes, resolved by a rule nobody sees applied.
+    """
+    assert "expiry" in LegRequest.model_fields
+    assert LegRequest.model_fields["expiry"].is_required(), "no default; the Leg names its series"
+
+    assert "expiry" not in AnalysisRequest.model_fields
+    with pytest.raises(ValidationError):
+        AnalysisRequest(
+            moment="2026-01-27T06:30:00",
+            expiry="10FEB26",
+            legs=[{"strike": 25200.0, "option_type": "CE", "expiry": "10FEB26", "direction": 1}],
+        )
 
 
 def test_a_strategy_is_an_ordered_list_of_legs_and_not_a_type():
@@ -119,10 +153,10 @@ def test_a_strategy_is_an_ordered_list_of_legs_and_not_a_type():
     assert not hasattr(models, "Strategy"), "a Strategy is a list, not a type"
 
     condor = [
-        {"strike": 24800.0, "option_type": "PE", "direction": 1},
-        {"strike": 25000.0, "option_type": "PE", "direction": -1},
-        {"strike": 25400.0, "option_type": "CE", "direction": -1},
-        {"strike": 25600.0, "option_type": "CE", "direction": 1},
+        {"strike": 24800.0, "option_type": "PE", "expiry": "10FEB26", "direction": 1},
+        {"strike": 25000.0, "option_type": "PE", "expiry": "10FEB26", "direction": -1},
+        {"strike": 25400.0, "option_type": "CE", "expiry": "10FEB26", "direction": -1},
+        {"strike": 25600.0, "option_type": "CE", "expiry": "10FEB26", "direction": 1},
     ]
     request = AnalysisRequest(moment="2026-01-27T06:30:00", legs=condor)
 
@@ -184,7 +218,7 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
         spot=25100.25,
         forward=25219.12,
         discount=0.993480,
-        curve=Curve(spot=[24000.0, 25200.0, 26000.0], pnl_at_expiry=[-344.05, -344.05, 455.95]),
+        curve=Curve(forward=[24000.0, 25200.0, 26000.0], pnl_at_expiry=[-344.05, -344.05, 455.95]),
         metrics=Metrics(
             max_profit=None,
             max_loss=-344.05,
@@ -196,10 +230,13 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
         total_greeks=exposure,
     )
     assert {"curve", "metrics", "greeks", "total_greeks"} <= set(response.model_dump())
-    assert len(response.curve.spot) == len(response.curve.pnl_at_expiry)
+    assert len(response.curve.forward) == len(response.curve.pnl_at_expiry)
 
     # The Forward is published beside the Greeks because a delta is a slope against
     # something, and that something is not spot: the two differ by 118.87 here (#51).
+    # Since #72 it is also what the curve's x-axis is measured in, which is why the
+    # array above is `forward` and not `spot` - and `spot` is still here, because Spot
+    # is still observed and the screen still prints it.
     assert response.forward - response.spot == pytest.approx(118.87, abs=0.01)
 
     # A Greek is a Finite like every other number on the wire - ADR-0001 bans NaN on it
@@ -208,4 +245,4 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
         LegGreeks(delta=float("nan"), gamma=0.0, vega=0.0, theta=0.0, rho=0.0)
 
     with pytest.raises(ValidationError):
-        Curve(spot=[24000.0, 25200.0], pnl_at_expiry=[-344.05])
+        Curve(forward=[24000.0, 25200.0], pnl_at_expiry=[-344.05])
