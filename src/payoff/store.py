@@ -42,12 +42,38 @@ CHAIN = "chain"
 """The Chain: one row per minute, per strike, per side, with the carry-forward already
 applied (#67). Partitioned by asset, date and expiry. #64 adds a summary and a payoff."""
 
+PAYOFF = "payoff"
+"""The Payoff of a Leg at Expiry, as corner points (#70).
+
+**Unpartitioned, and one file for the whole dataset.** `max(F - K, 0)` depends on the
+strike and the type and on nothing else - not on the date, not on the minute, not on the
+Expiry - so partitioning it by any of those would write one identical copy per partition
+and invite twenty-four of them to drift.
+
+Three corners per (strike, side): the low end of the shared Forward domain, the strike,
+and the high end. A Payoff is flat, then straight, and bends exactly once, so those three
+points describe it exactly and linear interpolation between them reconstructs it without
+error. A sampled grid stores the same straight segment many times over and still cuts the
+corner unless a sample lands precisely on the strike - which is invisible on a chart,
+because a four-Leg sum with four rounded corners still looks plausible.
+
+**Every row sits on one shared, absolute Forward domain**, whose bounds are published in
+the manifest. Legs are summed by adding their values at the same Forward, so a per-Leg
+domain centred on its own strike sums points that are not the same point.
+"""
+
 MANIFEST = "manifest"
-"""Which Expiries pair with which dates (#67).
+"""Which Expiries pair with which dates, and the bounds of the Forward domain (#67, #70).
 
 **Unpartitioned**, and deliberately so: it is the index *over* the partitions, so keying
 it by the same keys would make it answerable only by whoever already knew the answer. One
 small file, read whole.
+
+The Forward domain's two bounds live here rather than in a constant on either side,
+because the writer that lays the corner points down and the reader that interpolates
+between them have to agree on where the outer two sit. A constant in the reader agrees
+until the day the writer's changes - and then it disagrees silently, by interpolating
+over a segment that is not the segment that was stored.
 """
 
 DERIVATION_VERSION = "v1"

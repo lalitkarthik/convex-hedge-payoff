@@ -10,6 +10,7 @@ the day is immutable. So it happens here, once, and the API only reads.
       -> derive.fits / solved_volatility        forward, discount, volatility
       -> carry_forward()                        every minute for every strike
       -> Data/runtime/chain_v1/asset=.../date=.../expiry=.../part-0.parquet
+      -> Data/runtime/payoff_v1/part-0.parquet            corner points, unpartitioned
       -> Data/runtime/manifest_v1/part-0.parquet          written last, from the tree
 
 **Which direction the Oracle flows matters.** Nothing here, and nothing under `src/`,
@@ -33,6 +34,10 @@ rows** - roughly twenty minutes of a session. Column-store statistics are the on
 mechanism that lets a filter skip data, and an unsorted file gives the lazy scan nothing
 to skip: the laziness would be decoration.
 
+**The Payoff artifact is one file for the whole dataset, not one per day (#70).**
+`max(F - K, 0)` depends on the strike and the type and on nothing else, so partitioning
+it by date would write twenty-four identical copies of the same 588 rows.
+
 Usage:  python scripts/build_runtime.py [root]
         python scripts/build_runtime.py [root] --dates=2026-01-27,2026-02-10
         python scripts/build_runtime.py [root] --check     reconcile without writing
@@ -46,7 +51,7 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from payoff import derive, seed, store  # noqa: E402  - after the path is set
+from payoff import derive, seed, store, strategy  # noqa: E402  - after the path is set
 
 ASSET = "NIFTY"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "Data" / "runtime"
@@ -101,12 +106,58 @@ disagree by up to 0.0275 when the sides are minutes apart. A stored column that
 disagreed with the served one would be worse than an absent column.
 """
 
-MANIFEST_SCHEMA = {"asset": pl.String, "date": pl.Date, "expiry": pl.Date}
-"""What the manifest records: which Expiries pair with which dates (#67).
+MANIFEST_SCHEMA = {
+    "asset": pl.String,
+    "date": pl.Date,
+    "expiry": pl.Date,
+    "forward_min": pl.Float64,
+    "forward_max": pl.Float64,
+}
+"""What the manifest records: which Expiries pair with which dates (#67), and the two
+bounds of the shared Forward domain (#70).
 
-The tree answers one direction of that already - a date's directory contains its
+The tree answers one direction of the pairing already - a date's directory contains its
 expiries - but not the other, and walking twenty-four directories to answer "which dates
 did this series trade on" is a directory listing pretending to be a query.
+
+The two bounds repeat on every row, which is a fact about one dataset written once per
+pairing. They are read back off the Payoff artifact rather than recomputed here, so the
+number the manifest publishes is the number the stored corners actually sit on - the one
+arrangement in which writer and reader cannot end up disagreeing.
+"""
+
+PAYOFF_SCHEMA = {
+    "strike": pl.Float64,
+    "option_type": pl.String,
+    "corner": pl.Int8,
+    "forward": pl.Float64,
+    "payoff": pl.Float64,
+}
+"""The Payoff artifact: three corner points per (strike, side) (#70).
+
+`corner` is 0, 1, 2 - the low end of the domain, the strike, the high end - and it is
+stored rather than inferred from the ordering because "three corners per Leg" is the
+claim this representation rests on, and a claim that is only true of the sort order is
+one nothing can check. It also survives a reader that sorts by something else.
+
+`payoff` is premium-blind, in CONTEXT.md's sense: `max(F - K, 0)` for a call and
+`max(K - F, 0)` for a put. Subtracting the Entry Premium is what turns it into P&L, and
+that is the caller's job, because the Entry Premium is a property of the trade rather
+than of the contract.
+"""
+
+FAR_TAIL = 2.0
+"""How far above the highest strike the domain's upper bound sits.
+
+Twice the highest strike, which is what `strategy._kinks` used before the domain moved
+into the manifest. The number itself does not matter to any published figure - beyond
+the highest strike every Payoff is a straight line, so the far corner only has to be far
+enough out that the line is unambiguous. What matters is that it is **one** number for
+the whole dataset rather than one per Leg.
+
+The lower bound is 0.0 and is not a parameter: the Forward cannot fall below zero
+(CONTEXT.md), which is why only the right-hand tail can ever be Unbounded and why a long
+put's maximum profit is its strike less what was paid for it.
 """
 
 
@@ -225,8 +276,108 @@ def write_day(root: Path | str, day: date, expiry: date) -> Path:
     return part
 
 
+def _unpartitioned(root: Path | str, dataset: str, frame: pl.DataFrame) -> Path:
+    """Write one small whole-dataset file, replacing whatever was there.
+
+    The same replace-rather-than-add discipline `write_day` uses, and for the same
+    reason: a second parquet left beside the first is read by the scan as extra rows.
+    """
+    root_dir = store.dataset_root(root, dataset)
+    root_dir.mkdir(parents=True, exist_ok=True)
+    target = root_dir / "part-0.parquet"
+    for stale in root_dir.glob("*.parquet"):
+        if stale != target:
+            stale.unlink()
+
+    frame.write_parquet(target)
+    return target
+
+
+def stored_keys(root: Path | str) -> set[tuple[float, str]]:
+    """Every (strike, side) the Payoff artifact already covers, or nothing if it has none.
+
+    Read so that `write_payoff` **extends** rather than replaces. A strike that appeared
+    once is a strike a saved Strategy may still name, and dropping it because today's
+    build was narrower would take the Expiry line away from a chart that had one.
+    """
+    if not store.dataset_root(root, store.PAYOFF).exists():
+        return set()
+    rows = store.scan(root, store.PAYOFF).select("strike", "option_type").unique().collect()
+    return {(float(strike), str(side)) for strike, side in rows.rows()}
+
+
+def chain_keys(root: Path | str) -> set[tuple[float, str]]:
+    """Every strike in the stored Chain, crossed with **both** sides.
+
+    Crossed rather than taken as the pairs that traded, because the Payoff of a put at a
+    strike that has so far quoted only calls is not unknown - it is `max(K - F, 0)`, and
+    it is the same function whether or not anybody has traded it yet. Two of the ninety-
+    eight strikes in this dataset quoted one side only, and a trader who picks the other
+    side of one of them is asking an ordinary question.
+    """
+    if not store.dataset_root(root).exists():
+        return set()
+    strikes = store.scan(root).select("strike").unique().collect()["strike"]
+    return {(float(strike), side) for strike in strikes for side in ("CE", "PE")}
+
+
+def payoff_frame(keys: set[tuple[float, str]]) -> pl.DataFrame:
+    """Three corner points for every (strike, side), on one shared Forward domain.
+
+    The domain is a property of the whole set of keys and never of one Leg: the upper
+    bound is `FAR_TAIL` times the **highest strike in the dataset**, not that times the
+    Leg's own strike. Corners on a per-Leg domain are what makes a Strategy's Legs sum at
+    points that are not the same point, and the sum is wrong without ever looking wrong.
+
+    The value at each corner is `strategy.intrinsic_value`, which is the one definition
+    of a Payoff in this codebase. Writing `max(F - K, 0)` out again here would be a second
+    implementation of the thing the store exists to make there be one of.
+    """
+    ordered = sorted(keys)
+    high = FAR_TAIL * max(strike for strike, _ in ordered)
+
+    rows = []
+    for strike, option_type in ordered:
+        for corner, forward in enumerate((0.0, strike, high)):
+            value = strategy.intrinsic_value(forward, strike, is_call=option_type == "CE")
+            rows.append((strike, option_type, corner, forward, float(value)))
+
+    return pl.DataFrame(rows, schema=PAYOFF_SCHEMA, orient="row").sort(
+        "strike", "option_type", "corner"
+    )
+
+
+def write_payoff(root: Path | str, extra: tuple[tuple[float, str], ...] = ()) -> Path:
+    """Write the one unpartitioned Payoff artifact. Returns the file.
+
+    `extra` names (strike, side) pairs that are not in the Chain yet. **Adding a strike is
+    this call and nothing else** - no day is re-derived, no partition is rewritten, and
+    the twenty-four chain files are not so much as opened. Which is the point: the Payoff
+    of a contract has nothing to do with any day, so widening the set of contracts must
+    not cost a rebuild of the days.
+    """
+    return _unpartitioned(
+        root, store.PAYOFF, payoff_frame(chain_keys(root) | stored_keys(root) | set(extra))
+    )
+
+
+def forward_domain(root: Path | str) -> tuple[float, float]:
+    """The two bounds the stored corners actually sit on, read off the artifact.
+
+    Read back rather than recomputed, so that the manifest cannot publish a domain the
+    Payoff artifact was not written on. Recomputing it would be one line shorter and
+    would be wrong the first time the two calls saw different inputs.
+    """
+    bounds = (
+        store.scan(root, store.PAYOFF)
+        .select(low=pl.col("forward").min(), high=pl.col("forward").max())
+        .collect()
+    )
+    return float(bounds["low"][0]), float(bounds["high"][0])
+
+
 def write_manifest(root: Path | str) -> Path:
-    """Record which Expiries pair with which dates, read back off the tree itself.
+    """Record the date/Expiry pairing and the Forward domain, read off the tree itself.
 
     **The build's last step, and unconditional.** Read off the tree rather than off the
     list of dates the build was asked for, so it describes what is actually there; and
@@ -234,25 +385,23 @@ def write_manifest(root: Path | str) -> Path:
     wider build cannot survive a narrower one and go on advertising a day that is no
     longer stored. A dropdown built on a stale manifest offers a date that returns
     nothing, and it fails at the point a trader clicks.
+
+    The Forward domain rides along for the same reason and with the same timing: the
+    reader interpolates between corners it did not write, so the bounds it interpolates
+    over have to be the bounds they were written on (#70).
     """
+    low, high = forward_domain(root)
     pairs = (
         store.scan(root)
         .select("asset", "date", "expiry")
         .unique()
         .sort("asset", "date", "expiry")
+        .with_columns(forward_min=pl.lit(low), forward_max=pl.lit(high))
         .collect()
         .select([pl.col(name).cast(dtype) for name, dtype in MANIFEST_SCHEMA.items()])
     )
 
-    root_dir = store.dataset_root(root, store.MANIFEST)
-    root_dir.mkdir(parents=True, exist_ok=True)
-    target = root_dir / "part-0.parquet"
-    for stale in root_dir.glob("*.parquet"):
-        if stale != target:
-            stale.unlink()
-
-    pairs.write_parquet(target)
-    return target
+    return _unpartitioned(root, store.MANIFEST, pairs)
 
 
 def check(root: Path | str = DEFAULT_ROOT, dates: tuple[date, ...] | None = None) -> int:
@@ -290,6 +439,11 @@ def main(root: Path | str = DEFAULT_ROOT, dates: tuple[date, ...] | None = None)
 
     `dates` defaults to every trading date in the dataset. The test suite passes a subset
     - see `tests/conftest.py` for why - and that is the whole reason this is a parameter.
+
+    The order is days, then the Payoff artifact, then the manifest. The Payoff artifact
+    has to see the days to know which strikes exist, and the manifest has to see the
+    Payoff artifact to publish the domain its corners were written on - which is also why
+    the manifest stays last and unconditional.
     """
     written = 0
     for day in dates or seed.trading_dates():
@@ -299,8 +453,14 @@ def main(root: Path | str = DEFAULT_ROOT, dates: tuple[date, ...] | None = None)
             written += rows
             print(f"{day}  {rows:>7,} filled rows -> {part.relative_to(root)}")
 
+    payoff = write_payoff(root)
+    corners = pl.scan_parquet(payoff).select(pl.len()).collect().item()
+    print(f"{corners:>7,} corner points -> {payoff.relative_to(root)}")
+
     manifest = write_manifest(root)
-    print(f"{written:,} rows written; manifest -> {manifest.relative_to(root)}")
+    low, high = forward_domain(root)
+    print(f"{written:,} rows written; forward domain {low:,.0f} to {high:,.0f}")
+    print(f"manifest -> {manifest.relative_to(root)}")
     return Path(root)
 
 

@@ -6,10 +6,10 @@ implementation is what ADR-0001 and the golden test exist to prevent, and the on
 honest way to delete it is for the server to publish the rows.
 
 **One computation, two presentations.** The chart and the table are the same P&L at
-Expiry sampled on two grids - 400 points across +/-6% for the line, 50-point steps for
-the rows a trader reads. If they can disagree, one of them is lying, and the assertion
-that they agree at shared Spots is the whole reason the table ships in the fat response
-rather than from an endpoint of its own.
+Expiry sampled on two grids - 400 points across +/-6% for the line, plus its corners
+since #70, and 50-point steps for the rows a trader reads. If they can disagree, one of
+them is lying, and the assertion that they agree at shared Spots is the whole reason the
+table ships in the fat response rather than from an endpoint of its own.
 
 The anchor moment is 2026-01-27 06:30 UTC = 12:00 IST, where the 25200 straddle costs
 670.75 per unit.
@@ -103,23 +103,33 @@ def test_the_table_lies_on_the_chart_everywhere_the_chart_is_straight(straddle):
     assert checked > 20, "the exclusion window swallowed the test"
 
 
-def test_the_table_lands_on_the_peak_the_chart_steps_past(straddle):
-    """Where the two grids differ, and why the table is the one to trust there.
+def test_the_chart_the_table_and_the_figure_land_on_the_same_peak(straddle):
+    """**#70 closed the gap this test used to pin**, and the assertion is inverted.
 
-    A short straddle peaks exactly at its strike. The chart's 400 points step about 7.55
-    apart and miss it, reporting ~668.59 at the nearest sample; the table lands on 25,200
-    because 50 divides it, and reports 670.75. Both are correct samples of one curve -
-    the chart is drawing a line, not claiming its vertices are extrema.
+    It read `max(curve.values()) < STRADDLE_PREMIUM`, with the comment "the chart is
+    expected to miss the peak". It did miss it: a short straddle peaks exactly at its
+    strike, and the chart's 400 evenly spaced points step about 7.55 apart, so the
+    nearest sample reported ~668.59 while the table and the Max Profit beside it said
+    670.75. Three honest numbers off one curve on two grids - and nothing a trader could
+    be told about it that would stop it looking like a bug.
 
-    This is why `metrics` reads its extrema off the kinks rather than off a grid, and it
-    is worth pinning: the day someone "simplifies" the table to a resample of the curve,
-    the peak a trader reads becomes wrong by two rupees and nothing looks broken.
+    #64 story 16 is "max profit, max loss and Breakeven read off the same shape the chart
+    draws, so that the number and the picture cannot disagree", and #70 is where that is
+    delivered: the Expiry line is drawn through the stored corner points as well as
+    through the grid, so the strike is a **vertex of the line** rather than a Forward
+    between two of its samples.
+
+    The old assertion is not weakened here, it is replaced by a stronger one - equality
+    where there used to be an inequality, and a kink that must be present on the line
+    rather than one that must be absent.
     """
     curve = dict(zip(straddle["curve"]["spot"], straddle["curve"]["pnl_at_expiry"]))
     table = dict(zip(straddle["table"]["spot"], straddle["table"]["pnl_at_expiry"]))
 
+    assert STRIKE in curve, "the kink is a point on the line, not a gap between two of them"
+    assert curve[STRIKE] == pytest.approx(STRADDLE_PREMIUM, abs=1e-9)
     assert table[STRIKE] == pytest.approx(STRADDLE_PREMIUM, abs=1e-9)
-    assert max(curve.values()) < STRADDLE_PREMIUM, "the chart is expected to miss the peak"
+    assert max(curve.values()) == pytest.approx(STRADDLE_PREMIUM, abs=1e-9)
     assert straddle["metrics"]["max_profit"] == pytest.approx(table[STRIKE], abs=1e-9)
 
 
