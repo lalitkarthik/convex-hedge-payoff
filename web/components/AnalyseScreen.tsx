@@ -73,9 +73,11 @@ export default function AnalyseScreen({
             </p>
           ) : (
             <>
+              {/* The Forward, not Spot: the axis is in Forward, and a reference line
+                  has to stand on the axis it is drawn against (#72). */}
               <PayoffChart
                 curve={analysis.curve}
-                spot={analysis.spot}
+                forward={analysis.forward}
                 breakevens={analysis.metrics.breakevens}
               />
               <div className="tabs" role="tablist">
@@ -102,7 +104,9 @@ export default function AnalyseScreen({
                 </>
               )}
 
-              {tab === "table" && <PayoffTable table={analysis.table} spot={analysis.spot} />}
+              {tab === "table" && (
+                <PayoffTable table={analysis.table} forward={analysis.forward} />
+              )}
             </>
           )}
         </main>
@@ -116,10 +120,14 @@ export default function AnalyseScreen({
             priced against is on screen beside it.
           */}
           <LegsStrip legs={legs} readOnly />
+          {/* Spot is still here, and deliberately (#72). It stopped being the axis; it
+              did not stop being observed, and it is the one figure on this line that is
+              measured rather than fitted. */}
           <p className="note">
             Forward {analysis.forward.toFixed(2)} · discount {analysis.discount.toFixed(6)} ·
-            spot {analysis.spot.toFixed(2)}. Every figure on this page came from one
-            request, so none of them can be as-of a different minute.
+            spot {analysis.spot.toFixed(2)}. The chart and the table are drawn in Forward.
+            Every figure on this page came from one request, so none of them can be as-of a
+            different minute.
           </p>
         </aside>
       </div>

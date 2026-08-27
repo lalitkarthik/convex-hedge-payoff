@@ -58,7 +58,12 @@ def analyse(client: TestClient, legs: list[dict], **extra):
 
 
 def test_a_single_bought_call_comes_back_as_a_payoff_curve(client):
-    """#24's tracer bullet: 'a curve of at least 200 points, each a Spot and a P&L'.
+    """#24's tracer bullet: 'a curve of at least 200 points, each an x and a P&L'.
+
+    The x is a **Forward** and the field says so (#72). #24 wrote "a Spot" because that
+    is what the axis was called then; CONTEXT.md now names the Forward as the unit of
+    the chart's x-axis, and the array is `curve.forward` so that the wire and the
+    glossary cannot be read two different ways.
 
     The Leg is described by strike, type and direction alone. The client supplies no
     price and no volatility - the server reads both off the Chain at the moment asked
@@ -72,9 +77,41 @@ def test_a_single_bought_call_comes_back_as_a_payoff_curve(client):
     assert body["spot"] == pytest.approx(25100.25), "the NIFTY level at the anchor minute"
 
     curve = body["curve"]
-    assert len(curve["spot"]) >= 200
-    assert len(curve["pnl_at_expiry"]) == len(curve["spot"])
-    assert curve["spot"] == sorted(curve["spot"]), "an x-axis that is not sorted is not an axis"
+    assert len(curve["forward"]) >= 200
+    assert len(curve["pnl_at_expiry"]) == len(curve["forward"])
+    assert curve["forward"] == sorted(curve["forward"]), (
+        "an x-axis that is not sorted is not an axis"
+    )
+
+
+def test_the_chart_window_is_centred_on_the_forward_and_never_on_spot(client):
+    """**No Spot-to-Forward conversion survives in the serving path** (#72).
+
+    The window used to be +/-6% either side of Spot while its points were read off corner
+    points stored on a *Forward* domain. That is a conversion, and the cheapest kind to
+    miss: it assumes the basis is zero. The basis is +118.87 at this minute - more than
+    two 50-point strike intervals - so the whole chart sat two strikes to the left of the
+    axis it was drawn against, symmetric about the wrong number and looking perfectly
+    well.
+
+    Graded here rather than by reading `strategy.FORWARD_RANGE`, which would assert that a
+    constant equals itself. The midpoint of what came back over HTTP is the claim, and it
+    has to miss Spot by the whole basis to be right.
+
+    `spot` is still published on the same response, and that is checked here too: this
+    ticket renames what carried a Forward, it does not delete the Spot a trader reads.
+    """
+    body = analyse(client, [{"strike": STRIKE, "option_type": "CE", "direction": 1}]).json()
+    points = body["curve"]["forward"]
+    centre = (min(points) + max(points)) / 2
+
+    assert centre == pytest.approx(body["forward"], rel=1e-9), "centred on the Forward"
+    assert centre != pytest.approx(body["spot"], abs=1.0), "and demonstrably not on Spot"
+    assert body["forward"] - body["spot"] == pytest.approx(118.87, abs=1e-2), "the basis"
+
+    # The same window, and the same argument, for the coarse grid the table is read on.
+    table = body["table"]["forward"]
+    assert min(table) >= min(points) and max(table) <= max(points)
 
 
 SHORT_STRADDLE = [

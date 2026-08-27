@@ -11,7 +11,9 @@ import { bound, level, price, ratio } from "@/lib/format";
  *    credit). `CONTEXT.md` signs it that way and nothing here re-signs it.
  *  - **An absent bound is the word "Unlimited"** — never `∞`, never blank, never a very
  *    large number, all three of which read as a value. Only the upside can be unbounded:
- *    spot cannot fall below zero, so the left-hand tail always terminates.
+ *    the Forward cannot fall below zero, so the left-hand tail always terminates. The
+ *    Forward, because that is what the axis these bounds are read off is measured in
+ *    (#72, `CONTEXT.md`) — the same sentence used to say spot.
  *
  * Reward/risk is not-applicable when either side is Unlimited. A ratio against an
  * unlimited gain has no meaning, and printing a big number instead would read as a good

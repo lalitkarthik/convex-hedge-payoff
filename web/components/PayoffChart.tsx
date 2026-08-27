@@ -17,30 +17,35 @@ import { level, price } from "@/lib/format";
  * **P&L at expiry** — not "payoff". `CONTEXT.md` is explicit that both lines a trader
  * sees are P&L; Payoff is the premium-blind terminal value, one subtraction away.
  *
- * 400 points across spot ±6%, with the region above zero and the region below it
+ * **The x-axis is the Forward** (#72, `CONTEXT.md`) — the price the pricing model
+ * actually consumes, and the unit every stored corner point is laid down in. It was
+ * labelled "spot" while carrying exactly these numbers, which read as correct: the basis
+ * is +118.87 at the anchor, so a Forward printed as a Spot is a plausible index level.
+ *
+ * 400 points across the Forward ±6%, with the region above zero and the region below it
  * visibly different. The colour change is a `linearGradient` whose offset sits exactly
  * where the curve crosses zero, which is why the fill switches at the axis rather than
  * at a rounded gridline.
  *
- * Reference lines at spot and at every Breakeven. **The line never renders a gap**: NaN
- * cannot reach it — the wire type forbids one and the arithmetic upstream cannot produce
- * one — so a gap would mean a bug here rather than missing data.
+ * Reference lines at the Forward and at every Breakeven. **The line never renders a
+ * gap**: NaN cannot reach it — the wire type forbids one and the arithmetic upstream
+ * cannot produce one — so a gap would mean a bug here rather than missing data.
  */
 export default function PayoffChart({
   curve,
-  spot,
+  forward,
   breakevens,
 }: {
   curve: Curve;
-  spot: number;
+  forward: number;
   breakevens: number[];
 }) {
   // The wire carries two parallel arrays, as `models.Curve` publishes them and as the
   // prototype in #9 did; Recharts wants one array of records. Zipping is the whole of
   // the adaptation - the arrays are guaranteed the same length by a validator on the
   // model, so there is no ragged case to handle.
-  const points = curve.spot.map((value, index) => ({
-    spot: value,
+  const points = curve.forward.map((value, index) => ({
+    forward: value,
     pnl: curve.pnl_at_expiry[index],
   }));
   const values = curve.pnl_at_expiry;
@@ -54,7 +59,7 @@ export default function PayoffChart({
   return (
     <div style={{ width: "100%", height: 260 }}>
       <ResponsiveContainer>
-        <ComposedChart data={points} margin={{ top: 8, right: 8, bottom: 4, left: 4 }}>
+        <ComposedChart data={points} margin={{ top: 8, right: 8, bottom: 18, left: 4 }}>
           <defs>
             <linearGradient id="pnl" x1="0" y1="0" x2="0" y2="1">
               <stop offset={zero} stopColor="#0f9d58" stopOpacity={0.75} />
@@ -63,12 +68,21 @@ export default function PayoffChart({
           </defs>
 
           <XAxis
-            dataKey="spot"
+            dataKey="forward"
             type="number"
             domain={["dataMin", "dataMax"]}
             tickFormatter={(value: number) => level(value)}
             tick={{ fontSize: 10, fill: "#93a0ac" }}
             tickCount={6}
+            // Titled, because an unlabelled axis of five-figure index levels reads as
+            // Spot to anyone who has seen one of these charts before (#72).
+            label={{
+              value: "Forward at expiry",
+              position: "insideBottom",
+              offset: -12,
+              fontSize: 10,
+              fill: "#93a0ac",
+            }}
           />
           <YAxis
             tickFormatter={(value: number) => level(value)}
@@ -77,17 +91,17 @@ export default function PayoffChart({
           />
 
           <Tooltip
-            labelFormatter={(value: number) => `Spot ${level(value)}`}
+            labelFormatter={(value: number) => `Forward ${level(value)}`}
             formatter={(value: number) => [price(value), "P&L at expiry"]}
             contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #cdd3da" }}
           />
 
           <ReferenceLine y={0} stroke="#5b6773" strokeWidth={1} />
           <ReferenceLine
-            x={spot}
+            x={forward}
             stroke="#4338ca"
             strokeDasharray="4 3"
-            label={{ value: "spot", position: "top", fontSize: 10, fill: "#4338ca" }}
+            label={{ value: "forward", position: "top", fontSize: 10, fill: "#4338ca" }}
           />
           {breakevens.map((breakeven) => (
             <ReferenceLine
@@ -96,9 +110,10 @@ export default function PayoffChart({
               stroke="#93a0ac"
               strokeDasharray="2 3"
               label={{
-                // Each Breakeven labelled with its distance from spot, because "how far
-                // does it have to move" is the question being asked of this chart.
-                value: `${(((breakeven - spot) / spot) * 100).toFixed(1)}%`,
+                // Each Breakeven labelled with its distance from the Forward, because
+                // "how far does it have to move" is the question being asked of this
+                // chart — and the Forward is what the axis measures (#72).
+                value: `${(((breakeven - forward) / forward) * 100).toFixed(1)}%`,
                 position: "insideTopRight",
                 fontSize: 9,
                 fill: "#5b6773",

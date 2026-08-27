@@ -268,8 +268,10 @@ def test_the_interface_takes_no_spot_no_rate_and_reads_no_data():
     """ADR-0001, asserted rather than trusted: `price(forward, strike, T, vol,
     discount, is_call)`.
 
-    The payoff chart's x-axis is Spot, so the obvious signature takes one. It was
-    rejected: a core accepting a Spot and a rate has to reconstruct the Forward
+    The payoff chart's x-axis was called Spot when this was written, so the obvious
+    signature took one. It was rejected then, and the axis itself has since moved to the
+    Forward (#72, CONTEXT.md) - so nothing above this seam takes a Spot either. A core
+    accepting a Spot and a rate has to reconstruct the Forward
     internally, and the reconstruction is the unstable part - the implied continuous
     rate runs 0.9% to 28.4% and diverges as T approaches zero, and on 2,397 of 8,356
     minutes a Forward cannot be fitted at all. That contested rule (#13) lives above

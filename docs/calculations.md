@@ -25,6 +25,15 @@ the notebook or the API, its derivation is here.
 | $\Delta, \Gamma, \nu, \Theta$ | delta, gamma, vega and theta of a single contract |
 | $g_i$ | any one Greek of leg $i$ |
 
+> **The served chart's x-axis is $\hat F$, not $S_T$** (#72). `CONTEXT.md` names the
+> forward as the unit of the payoff chart's x-axis, the response field is `Curve.forward`,
+> and the window it spans is centred on the fitted forward rather than on spot. The
+> $S \to F$ shift set out in §2 is the alternative framing and is *not* applied on the
+> serving path: at expiry the forward is the settlement level, so a payoff that bends at
+> $K$ in $S_T$ bends at $K$ in the terminal forward too, and no basis has to be assumed to
+> hold. §2's derivation is left as written because it is what makes that equivalence
+> checkable.
+
 `dte_days` is a trading-day clock: one session consumes exactly 1.0, weekends and holidays
 none.
 

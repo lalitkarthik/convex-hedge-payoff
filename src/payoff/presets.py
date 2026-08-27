@@ -62,8 +62,8 @@ def strangle(centre: float, width: float, direction: int, expiry: str) -> list[L
 def credit_spread(centre: float, width: float, direction: int, expiry: str) -> list[LegRequest]:
     """Sell a put, buy a further one below it: paid up front, loss bounded.
 
-    The one directional Preset here, and the bullish one - it profits while Spot stays
-    above the sold strike. Its payoff crosses zero exactly once, which is what makes it
+    The one directional Preset here, and the bullish one - it profits while the Forward
+    stays above the sold strike. Its payoff crosses zero exactly once, which is what makes it
     a view on direction rather than on movement. `direction` is ignored for the reason
     it is on the condor: reversing the signs is a debit spread, a different trade.
     """

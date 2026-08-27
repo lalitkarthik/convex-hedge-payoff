@@ -132,6 +132,22 @@ describe("the Analyse page", () => {
     expect(peak).toContain("670.75");
   });
 
+  it("labels both axes Forward, because that is what they plot", async () => {
+    // #72: the wire stopped calling these numbers `spot`, so the screen has to stop too.
+    // A renamed field under a stale label fixes nothing for whoever is reading the chart,
+    // and the label is the only place the unit is visible: 25,200 is a plausible Spot and
+    // an equally plausible Forward, and the two are 118.87 apart at this minute.
+    //
+    // The Payoff Table tab is the one the test above left open.
+    const heading = await page.locator("table.grid thead").innerText();
+    expect(heading).toContain("Forward at expiry");
+    expect(heading).not.toContain("Spot");
+
+    // The chart sits above the tabs and is rendered whichever one is selected.
+    const chart = await page.locator("svg.recharts-surface").textContent();
+    expect(chart).toContain("Forward at expiry");
+  });
+
   it("refuses a link it cannot read, rather than analysing part of one", async () => {
     // Nine legs truncated to eight and a half by a chat client is the realistic case.
     // A chart of the eight that parsed would be wrong with nothing on screen saying so.

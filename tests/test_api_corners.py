@@ -122,7 +122,7 @@ def pnl(forward: float, legs: list[dict], premiums: dict = PREMIUMS) -> float:
 
 
 def drawn(body: dict) -> dict[float, float]:
-    return dict(zip(body["curve"]["spot"], body["curve"]["pnl_at_expiry"]))
+    return dict(zip(body["curve"]["forward"], body["curve"]["pnl_at_expiry"]))
 
 
 def on_the_line(body: dict, forward: float) -> float:
@@ -131,7 +131,7 @@ def on_the_line(body: dict, forward: float) -> float:
     Linear interpolation between the two points either side, which is what a chart draws
     between two vertices and therefore what a trader's eye reads off it.
     """
-    points = sorted(zip(body["curve"]["spot"], body["curve"]["pnl_at_expiry"]))
+    points = sorted(zip(body["curve"]["forward"], body["curve"]["pnl_at_expiry"]))
     below = max(point for point in points if point[0] <= forward)
     above = min(point for point in points if point[0] >= forward)
     if above[0] == below[0]:
@@ -152,9 +152,9 @@ def test_every_corner_of_a_four_leg_strategy_is_a_point_on_the_line(condor):
     for corner in CORNERS:
         assert corner in curve, f"the line does not pass through its own corner at {corner}"
 
-    spots = condor["curve"]["spot"]
-    assert spots == sorted(spots), "an x-axis that is not sorted is not an axis"
-    assert len(spots) == len(set(spots)), "a Forward drawn twice is a Forward drawn twice"
+    forwards = condor["curve"]["forward"]
+    assert forwards == sorted(forwards), "an x-axis that is not sorted is not an axis"
+    assert len(forwards) == len(set(forwards)), "a Forward drawn twice is a Forward drawn twice"
 
 
 def test_the_four_leg_sum_is_exact_at_each_of_its_four_corners(condor):
@@ -256,8 +256,10 @@ def test_the_published_extrema_are_the_extrema_of_the_line_that_is_drawn(condor)
     assert metrics["max_profit"] == pytest.approx(CREDIT, abs=1e-9), "the credit, kept whole"
     assert metrics["max_loss"] == pytest.approx(CREDIT - 200.0, abs=1e-9), "less the width"
 
-    peaks = [spot for spot, value in curve.items() if value == metrics["max_profit"]]
-    assert set(peaks) <= set(CORNERS) | {spot for spot in curve if 25000.0 < spot < 25400.0}, (
+    peaks = [point for point, value in curve.items() if value == metrics["max_profit"]]
+    assert set(peaks) <= set(CORNERS) | {
+        point for point in curve if 25000.0 < point < 25400.0
+    }, (
         "the maximum of a piecewise-linear curve sits on a corner or on the flat between two"
     )
 
@@ -289,6 +291,6 @@ def test_an_empty_strategy_still_draws_a_flat_line_on_the_shared_domain(client):
     """
     body = analyse(client, [])
 
-    assert body["curve"]["spot"], "an empty Strategy still has a Forward axis"
+    assert body["curve"]["forward"], "an empty Strategy still has a Forward axis"
     assert set(body["curve"]["pnl_at_expiry"]) == {0.0}
     assert body["metrics"]["breakevens"] == [], "flat at zero is not a Breakeven everywhere"

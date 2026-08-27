@@ -159,9 +159,20 @@ export interface AnalysisRequest {
   legs: LegRequest[];
 }
 
-/** Two parallel arrays, as a chart consumes them. Both lines are P&L, not Payoff. */
+/**
+ * Two parallel arrays, as a chart consumes them. Both lines are P&L, not Payoff.
+ *
+ * **The x-axis is the Forward** (#72). This array was called `spot` and never carried
+ * one: its values are read off corner points stored on a shared Forward domain, and the
+ * window they span is centred on `AnalysisResponse.forward`. `CONTEXT.md` names the
+ * Forward as the unit of the chart's x-axis, so the wire says the same word.
+ *
+ * The basis is +118.87 at the anchor, which is why the old name was worth changing and
+ * not merely untidy: a Forward labelled Spot is a plausible index level, and nothing on
+ * screen looked wrong.
+ */
 export interface Curve {
-  spot: number[];
+  forward: number[];
   pnl_at_expiry: number[];
 }
 
@@ -186,7 +197,12 @@ export interface LegGreeks {
 /** Everything about one Strategy, in one response. Deliberately fat (#23). */
 export interface AnalysisResponse {
   moment: string;
+  /**
+   * The NIFTY level at the moment — observed, not derived, and **not the axis** (#72).
+   * Context a trader reads beside the Forward; nothing is plotted against it.
+   */
   spot: number;
+  /** The Forward the Greeks were priced at — and the centre of the chart's window (#72). */
   forward: number;
   discount: number;
   curve: Curve;

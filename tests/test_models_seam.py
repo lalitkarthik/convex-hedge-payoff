@@ -218,7 +218,7 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
         spot=25100.25,
         forward=25219.12,
         discount=0.993480,
-        curve=Curve(spot=[24000.0, 25200.0, 26000.0], pnl_at_expiry=[-344.05, -344.05, 455.95]),
+        curve=Curve(forward=[24000.0, 25200.0, 26000.0], pnl_at_expiry=[-344.05, -344.05, 455.95]),
         metrics=Metrics(
             max_profit=None,
             max_loss=-344.05,
@@ -230,10 +230,13 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
         total_greeks=exposure,
     )
     assert {"curve", "metrics", "greeks", "total_greeks"} <= set(response.model_dump())
-    assert len(response.curve.spot) == len(response.curve.pnl_at_expiry)
+    assert len(response.curve.forward) == len(response.curve.pnl_at_expiry)
 
     # The Forward is published beside the Greeks because a delta is a slope against
     # something, and that something is not spot: the two differ by 118.87 here (#51).
+    # Since #72 it is also what the curve's x-axis is measured in, which is why the
+    # array above is `forward` and not `spot` - and `spot` is still here, because Spot
+    # is still observed and the screen still prints it.
     assert response.forward - response.spot == pytest.approx(118.87, abs=0.01)
 
     # A Greek is a Finite like every other number on the wire - ADR-0001 bans NaN on it
@@ -242,4 +245,4 @@ def test_one_response_carries_the_whole_answer_and_the_curve_cannot_be_ragged():
         LegGreeks(delta=float("nan"), gamma=0.0, vega=0.0, theta=0.0, rho=0.0)
 
     with pytest.raises(ValidationError):
-        Curve(spot=[24000.0, 25200.0], pnl_at_expiry=[-344.05])
+        Curve(forward=[24000.0, 25200.0], pnl_at_expiry=[-344.05])

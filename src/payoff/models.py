@@ -156,22 +156,34 @@ class Metrics(BaseModel):
 
 
 class Curve(BaseModel):
-    """The chart's line: P&L at Expiry across a range of Spot values.
+    """The chart's line: P&L at Expiry across a range of **Forward** values.
 
     Two parallel arrays, as the prototype in #9 published them and as a chart consumes
     them. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is
     premium-blind and is one subtraction away.
+
+    **The x-axis is the Forward, and this field is named for it** (#72). It was called
+    `spot` and it never carried one: every value here is read off corner points laid
+    down on a shared *Forward* domain (#70), and since #72 the window they span is
+    centred on the Forward as well. CONTEXT.md now says the same thing - the Forward is
+    the unit of the chart's x-axis and Spot is observed rather than derived - so the
+    glossary and the wire agree instead of contradicting each other quietly.
+
+    Quietly is the word: the basis is +118.87 at the anchor, so a Forward mislabelled
+    Spot is a plausible index level and nothing on screen looks wrong. A stale name that
+    reads as correct is the expensive kind. `AnalysisResponse.spot` is where a genuine
+    Spot still lives, and it is still published.
     """
 
-    spot: list[Finite]
+    forward: list[Finite]
     pnl_at_expiry: list[Finite]
 
     @model_validator(mode="after")
     def _same_length(self) -> "Curve":
         """Parallel arrays that disagree do not raise on a chart - they draw, slightly
         wrong, and nobody notices. So they cannot be built that way."""
-        if len(self.spot) != len(self.pnl_at_expiry):
-            raise ValueError("a curve needs one P&L for every Spot")
+        if len(self.forward) != len(self.pnl_at_expiry):
+            raise ValueError("a curve needs one P&L for every Forward")
         return self
 
 
@@ -218,12 +230,25 @@ class AnalysisResponse(BaseModel):
 
     moment: str
     spot: Finite
-    """The NIFTY level at the moment - what the header shows and the x-axis measures."""
+    """The NIFTY level at the moment - observed, never derived (CONTEXT.md).
+
+    **Still published, and no longer the axis** (#72). It used to be both: `curve` and
+    `table` were centred on this figure. They are centred on the Forward now, so this is
+    context a trader reads beside the Forward and the Discount Factor rather than
+    something a line is plotted against. Spot did not stop being observed when it stopped
+    being the x-axis, and a response that dropped it would lose the one number here that
+    is measured rather than fitted.
+    """
 
     forward: Finite
     """The Forward the Greeks were priced at, fitted from the quotes (#51). Published
     because a delta is meaningless without the underlying it is a slope against, and the
-    basis reaches +118.87 - the number is not spot."""
+    basis reaches +118.87 - the number is not spot.
+
+    **And the centre of the chart's window** (#72). `curve` and `table` run +/-6% either
+    side of this. Centring them on Spot was the last Spot-to-Forward conversion left in
+    the serving path - an unstated assumption that the basis is zero, worth 118.87 points
+    of shift at the anchor - and ADR-0001 exists to keep exactly that assumption out."""
 
     discount: Finite
     """The Discount Factor from the same fit. Delta and gamma carry it (#53)."""
@@ -231,12 +256,12 @@ class AnalysisResponse(BaseModel):
     curve: Curve
     metrics: Metrics
 
-    table: Curve = Curve(spot=[], pnl_at_expiry=[])
+    table: Curve = Curve(forward=[], pnl_at_expiry=[])
     """The Payoff Table (#29): the same P&L at Expiry, on the 50-point grid a trader
     reads, rather than the 400-point one the chart draws.
 
     The same `Curve` type as the chart deliberately - it is the same quantity sampled
-    twice, not two quantities, and the two must agree wherever they share a Spot. A type
+    twice, not two quantities, and the two must agree wherever they share a Forward. A type
     of its own would invite them to drift."""
 
     greeks: list[LegGreeks] = []

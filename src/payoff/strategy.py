@@ -7,7 +7,13 @@ Preset later (#30) adds no code here - if it ever does, something here was built
 
 P&L at Expiry needs intrinsic value alone, so nothing in this module calls the pricing
 core. That is what lets the HTTP layer ship without exposing unverified mathematics,
-and it is why ADR-0001's contested spot-to-forward rule (#13) is not needed for v1.
+and it is why ADR-0001's contested spot-to-forward rule (#13) is not needed here.
+
+**Every x in this module is a Forward, end to end (#72).** The stored corners sit on a
+Forward domain, the window the chart shows is centred on the Forward, and the array that
+goes out on the wire is called `Curve.forward` because that is what it holds. There is no
+`S -> F` anywhere between those three, which is the property CONTEXT.md now states for
+the chart and ADR-0001 already stated for the core.
 
 **The Expiry line is read, not computed (#70).** A Payoff is flat, then straight, and
 bends exactly once, so three corner points describe it exactly and linear interpolation
@@ -43,12 +49,18 @@ from payoff.models import Curve, Leg, LegGreeks, LegRequest, Metrics
 CURVE_POINTS = 400
 """#24 asks for at least 200. 400 is the width the vectorisation was measured at."""
 
-SPOT_RANGE = 0.06
-"""How far either side of Spot the **chart's window** runs - a framing choice, not the
-domain the Payoff is defined on. The domain is the whole dataset's and comes from the
+FORWARD_RANGE = 0.06
+"""How far either side of the **Forward** the chart's window runs - a framing choice, not
+the domain the Payoff is defined on. The domain is the whole dataset's and comes from the
 manifest; this only decides how much of it a trader is shown. Wide enough that a four-Leg
 structure's wings are visible, narrow enough that the interesting region is not a flat
-line."""
+line.
+
+**Either side of the Forward and not of Spot** (#72). The window was centred on Spot,
+which is a Spot-to-Forward conversion with the basis assumed to be zero - and it is
++118.87 at the anchor, so the window sat 118.87 points to the left of the axis it was
+drawn on. Nothing looked wrong, because a window is symmetric about whatever it is
+handed."""
 
 
 class MixedExpiry(ValueError):
@@ -122,7 +134,7 @@ class PayoffNotStored(LookupError):
         )
 
 
-def intrinsic_value(spot, strike: float, *, is_call: bool):
+def intrinsic_value(forward, strike: float, *, is_call: bool):
     """What the contract is worth at Expiry, ignoring what was paid for it.
 
     This is **Payoff** in CONTEXT.md's sense - premium-blind. Subtracting the Entry
@@ -133,8 +145,8 @@ def intrinsic_value(spot, strike: float, *, is_call: bool):
     of a Payoff, evaluated once at three points per contract rather than at four hundred
     points per request.
     """
-    spot = np.asarray(spot, dtype=float)
-    return np.maximum(spot - strike, 0.0) if is_call else np.maximum(strike - spot, 0.0)
+    forward = np.asarray(forward, dtype=float)
+    return np.maximum(forward - strike, 0.0) if is_call else np.maximum(strike - forward, 0.0)
 
 
 @lru_cache(maxsize=1)
@@ -198,16 +210,16 @@ def leg_payoff(forward, leg: Leg):
     return np.interp(np.asarray(forward, dtype=float), *stored)
 
 
-def pnl_at_expiry(spot, legs: list[Leg]):
+def pnl_at_expiry(forward, legs: list[Leg]):
     """P&L at Expiry for the whole Strategy, across a range of Forward values.
 
     Signed by direction and scaled by Quantity. No branching on how many Legs there are.
     Every Leg is evaluated at the Forwards it was handed, which are the same Forwards
     every other Leg is handed - that is what makes the sum a sum.
     """
-    total = np.zeros_like(np.asarray(spot, dtype=float))
+    total = np.zeros_like(np.asarray(forward, dtype=float))
     for leg in legs:
-        value = leg_payoff(spot, leg)
+        value = leg_payoff(forward, leg)
         total = total + leg.direction * leg.quantity * (value - leg.entry_premium)
     return total
 
@@ -217,7 +229,7 @@ def net_premium(legs: list[Leg]) -> float:
     return float(sum(leg.direction * leg.quantity * leg.entry_premium for leg in legs))
 
 
-def curve(legs: list[Leg], spot_centre: float) -> Curve:
+def curve(legs: list[Leg], forward_centre: float) -> Curve:
     """The chart's line: P&L at Expiry across the window a trader is shown.
 
     Four hundred evenly spaced points **plus every corner that falls inside the window**
@@ -232,17 +244,20 @@ def curve(legs: list[Leg], spot_centre: float) -> Curve:
 
     The window is clipped to the stored domain, because there is nothing to interpolate
     outside it and `np.interp` would flatten the line rather than say so.
+
+    **Centred on the Forward** (#72), which is what the axis is measured in. It was
+    centred on Spot, and the two are 118.87 apart at the anchor.
     """
     low, high = forward_domain()
-    left = max(spot_centre * (1 - SPOT_RANGE), low)
-    right = min(spot_centre * (1 + SPOT_RANGE), high)
+    left = max(forward_centre * (1 - FORWARD_RANGE), low)
+    right = min(forward_centre * (1 + FORWARD_RANGE), high)
 
     grid = np.linspace(left, right, CURVE_POINTS)
     corners = _corners(legs)
     points = np.unique(np.concatenate([grid, corners[(corners > left) & (corners < right)]]))
 
     pnl = pnl_at_expiry(points, legs)
-    return Curve(spot=[float(s) for s in points], pnl_at_expiry=[float(p) for p in pnl])
+    return Curve(forward=[float(f) for f in points], pnl_at_expiry=[float(p) for p in pnl])
 
 
 TABLE_STEP = 50.0
@@ -254,23 +269,23 @@ dividing the range into N, would put rows between strikes.
 """
 
 
-def payoff_table(legs: list[Leg], spot_centre: float, step: float = TABLE_STEP) -> Curve:
+def payoff_table(legs: list[Leg], forward_centre: float, step: float = TABLE_STEP) -> Curve:
     """The same P&L at Expiry as `curve`, sampled on the grid a trader reads.
 
     **One computation, two presentations.** This is not a second calculation of the
     chart - it is `pnl_at_expiry` again, on a coarser and rounder grid, which is why the
-    two agree exactly wherever they share a Spot. Publishing it beside the curve rather
+    two agree exactly wherever they share a Forward. Publishing it beside the curve rather
     than from an endpoint of its own is what keeps that true (#23, #29).
 
     The grid is snapped to multiples of `step` rather than started at the range edge, so
     the rows are 25,150 and 25,200 rather than 25,144.235 and 25,194.235 - and so the
     strike itself is a row, which matters because that is where a straddle peaks.
     """
-    low = np.ceil(spot_centre * (1 - SPOT_RANGE) / step) * step
-    high = np.floor(spot_centre * (1 + SPOT_RANGE) / step) * step
+    low = np.ceil(forward_centre * (1 - FORWARD_RANGE) / step) * step
+    high = np.floor(forward_centre * (1 + FORWARD_RANGE) / step) * step
     grid = np.arange(low, high + step / 2, step)
     pnl = pnl_at_expiry(grid, legs)
-    return Curve(spot=[float(s) for s in grid], pnl_at_expiry=[float(p) for p in pnl])
+    return Curve(forward=[float(f) for f in grid], pnl_at_expiry=[float(p) for p in pnl])
 
 
 def _corners(legs: list[Leg]) -> np.ndarray:
@@ -316,7 +331,7 @@ def breakevens(legs: list[Leg]) -> list[float]:
     points = _corners(legs)
     pnl = pnl_at_expiry(points, legs)
 
-    found = [float(spot) for spot, value in zip(points, pnl) if value == 0.0]
+    found = [float(forward) for forward, value in zip(points, pnl) if value == 0.0]
     for i in range(len(points) - 1):
         before, after = pnl[i], pnl[i + 1]
         if np.sign(before) * np.sign(after) < 0:
@@ -329,7 +344,7 @@ def breakevens(legs: list[Leg]) -> list[float]:
 def _is_unbounded(legs: list[Leg], *, upside: bool) -> bool:
     """Does the far tail keep running in one direction?
 
-    Only the right-hand tail can be Unbounded: Spot cannot fall below zero, so the
+    Only the right-hand tail can be Unbounded: the Forward cannot fall below zero, so the
     left-hand tail always terminates (CONTEXT.md). Decided from the net signed quantity
     of calls, which governs the slope far above every strike - no leg-count branching,
     and no need to recognise the shape.

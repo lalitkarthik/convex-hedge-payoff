@@ -60,8 +60,8 @@
           "table": {
             "$ref": "#/components/schemas/Curve",
             "default": {
-              "pnl_at_expiry": [],
-              "spot": []
+              "forward": [],
+              "pnl_at_expiry": []
             }
           },
           "total_greeks": {
@@ -225,25 +225,25 @@
         "type": "object"
       },
       "Curve": {
-        "description": "The chart's line: P&L at Expiry across a range of Spot values.\n\nTwo parallel arrays, as the prototype in #9 published them and as a chart consumes\nthem. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is\npremium-blind and is one subtraction away.",
+        "description": "The chart's line: P&L at Expiry across a range of **Forward** values.\n\nTwo parallel arrays, as the prototype in #9 published them and as a chart consumes\nthem. Both lines a trader sees are P&L rather than Payoff (CONTEXT.md) - Payoff is\npremium-blind and is one subtraction away.\n\n**The x-axis is the Forward, and this field is named for it** (#72). It was called\n`spot` and it never carried one: every value here is read off corner points laid\ndown on a shared *Forward* domain (#70), and since #72 the window they span is\ncentred on the Forward as well. CONTEXT.md now says the same thing - the Forward is\nthe unit of the chart's x-axis and Spot is observed rather than derived - so the\nglossary and the wire agree instead of contradicting each other quietly.\n\nQuietly is the word: the basis is +118.87 at the anchor, so a Forward mislabelled\nSpot is a plausible index level and nothing on screen looks wrong. A stale name that\nreads as correct is the expensive kind. `AnalysisResponse.spot` is where a genuine\nSpot still lives, and it is still published.",
         "properties": {
+          "forward": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Forward",
+            "type": "array"
+          },
           "pnl_at_expiry": {
             "items": {
               "type": "number"
             },
             "title": "Pnl At Expiry",
             "type": "array"
-          },
-          "spot": {
-            "items": {
-              "type": "number"
-            },
-            "title": "Spot",
-            "type": "array"
           }
         },
         "required": [
-          "spot",
+          "forward",
           "pnl_at_expiry"
         ],
         "title": "Curve",
@@ -626,7 +626,7 @@
   "paths": {
     "/analyse": {
       "post": {
-        "description": "Everything about one Strategy, as-of one moment, in one response.\n\nThe Expiry comes off the **Legs** (#71) and the request no longer carries one. It is\nsettled before anything is read, because it is what the reads are keyed by: the header\nfigures below belong to one series at one minute, and a Strategy that named two would\notherwise take them from whichever the store listed first.",
+        "description": "Everything about one Strategy, as-of one moment, in one response.\n\nThe Expiry comes off the **Legs** (#71) and the request no longer carries one. It is\nsettled before anything is read, because it is what the reads are keyed by: the header\nfigures below belong to one series at one minute, and a Strategy that named two would\notherwise take them from whichever the store listed first.\n\n**The chart and the table are centred on the Forward, not on Spot** (#72). They were\ncentred on Spot, which is a Spot-to-Forward conversion with the basis silently assumed\nto be zero - and it is +118.87 here, so the window sat two strike intervals to the\nleft of the axis it was plotted against. `spot` is still published, because Spot is\nstill observed and the screen still prints it; it is simply not what anything is\nplotted against any more.",
         "operationId": "analyse_analyse_post",
         "requestBody": {
           "content": {

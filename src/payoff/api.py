@@ -76,22 +76,28 @@ def analyse(request: AnalysisRequest) -> AnalysisResponse:
     settled before anything is read, because it is what the reads are keyed by: the header
     figures below belong to one series at one minute, and a Strategy that named two would
     otherwise take them from whichever the store listed first.
+
+    **The chart and the table are centred on the Forward, not on Spot** (#72). They were
+    centred on Spot, which is a Spot-to-Forward conversion with the basis silently assumed
+    to be zero - and it is +118.87 here, so the window sat two strike intervals to the
+    left of the axis it was plotted against. `spot` is still published, because Spot is
+    still observed and the screen still prints it; it is simply not what anything is
+    plotted against any more.
     """
     series = strategy.sole_expiry(request.legs)
     legs = chain.resolve_legs(request.legs, request.moment)
-    spot = chain.spot_at(request.moment, expiry=series)
     fit = chain.forward_at(request.moment, expiry=series)
 
     rows = strategy.leg_greeks(legs, fit.forward, fit.discount, fit.T)
 
     return AnalysisResponse(
         moment=request.moment,
-        spot=spot,
+        spot=chain.spot_at(request.moment, expiry=series),
         forward=fit.forward,
         discount=fit.discount,
-        curve=strategy.curve(legs, spot),
+        curve=strategy.curve(legs, fit.forward),
         metrics=strategy.metrics(legs),
-        table=strategy.payoff_table(legs, spot),
+        table=strategy.payoff_table(legs, fit.forward),
         greeks=rows,
         total_greeks=strategy.total_greeks(rows),
     )
