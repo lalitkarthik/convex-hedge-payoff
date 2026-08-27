@@ -67,7 +67,7 @@ function QuoteCells({
   const cells = [
     <td key="oi" className={`num ${stale}`}>{count(quote.open_interest)}</td>,
     <td key="vol" className={`num ${stale}`}>{count(quote.volume)}</td>,
-    <td key="d" className={`num ${stale}`}>{greek("delta", quote.delta)}</td>,
+    <td key="d" className={`num ${stale}`}>{quote.delta === null ? "" : greek("delta", quote.delta)}</td>,
     <td key="ltp" className={`num ${stale}`}>
       {price(quote.last)}
       {quote.age_minutes > 0 && <span className="age"> {quote.age_minutes}m</span>}
