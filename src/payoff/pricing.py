@@ -72,21 +72,24 @@ def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
     They are not converted for readability - a confusing convention is a labelling
     problem, not a maths problem:
 
-    | **delta, gamma** | **discounted** - see below                        |
+    | **delta, gamma** | **undiscounted** - see below                          |
     | vega             | per volatility point (a 1% move, so divided by 100)   |
     | rho              | per one percent                                       |
     | **theta**        | **a one-trading-day repricing, not the analytic form** |
 
-    **Delta and gamma carry the discount factor, and the Oracle's do not** (#53). The
-    Black-76 price is `D[F N(d1) - K N(d2)]`, so every derivative of it inherits the D:
-    delta is `D N(d1)`, bounded by `[0, D]` rather than `[0, 1]`. A delta of exactly 1
-    would mean an undiscounted payoff, and this payoff is discounted.
+    **Delta and gamma are undiscounted, which is the Oracle's convention.** The Black-76
+    price is `D[F N(d1) - K N(d2)]`, so a strict derivative of it inherits the D and
+    delta would be `D N(d1)`, bounded by `[0, D]`. #53 took that reading and this engine
+    reported it; it is reverted here because the Oracle - the shipped platform Greeks
+    this project grades itself against - reports `N(d1)`, and a convention the desk does
+    not use is a convention that has to be undone at every boundary.
 
-    The gap is exactly a factor of D - large enough to matter and small enough to read as
-    rounding. D runs 0.982269 to 1.000000 across the dataset, so it reaches **1.77%** on
-    delta. `docs/calculations.md` left the choice open for #27; #53 settled it, and
-    `test_oracle.py` scales the Oracle's two columns up to this convention rather than
-    scaling ours down to theirs.
+    Delta is therefore bounded by `[0, 1]` for a call and `[-1, 0]` for a put, and
+    `test_oracle.py` now compares against the file directly with no rescaling on either
+    side. The two agree to 2.2e-16.
+
+    **Vega and rho keep their D**, because the Oracle discounts those. That asymmetry is
+    the Oracle's, not ours.
 
     The theta convention is the expensive trap. Against the Oracle the repricing
     definition matches to 1.1e-11, while an analytic theta divided down to one session
@@ -123,8 +126,10 @@ def black76_greeks(forward, strike, T, vol, discount, *, is_call: bool) -> dict:
 
     return {
         "price": price,
-        "delta": discount * (norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0),
-        "gamma": discount * norm.pdf(d1) / (forward * v),
+        # Undiscounted, matching the Oracle. See the convention table above: vega and
+        # rho below DO carry the D, because the Oracle discounts those two.
+        "delta": norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0,
+        "gamma": norm.pdf(d1) / (forward * v),
         "vega": discount * forward * norm.pdf(d1) * np.sqrt(T) / 100,
         "theta": repriced - price,
         "rho": (

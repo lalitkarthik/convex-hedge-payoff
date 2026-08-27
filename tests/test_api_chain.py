@@ -255,14 +255,14 @@ def test_every_strike_in_the_chain_carries_a_volatility(client):
             assert 0.0 < row["iv"] < 1.0, "a decimal, never a percentage"
 
 
-def test_a_call_and_its_put_at_one_strike_have_deltas_exactly_the_discount_apart(chain):
-    """#53, and the sharpest available test that delta is **computed** rather than read.
+def test_a_call_and_its_put_at_one_strike_have_deltas_exactly_one_apart(chain):
+    """The sharpest available test that delta is **computed** rather than read.
 
-    Put-call parity differentiated: `d[D(F - K)]/dF = D`, so at one strike the call's
-    delta minus the put's is exactly the Discount Factor. The Oracle's columns are
-    **undiscounted** and would put exactly 1.0 here. At this minute D is 0.993480, so the
-    two conventions differ by 0.65% - large enough to matter, small enough to read as
-    rounding, and invisible to any assertion that only checks a delta looks plausible.
+    Put-call parity differentiated: `dC/dF - dP/dF = 1` once delta is undiscounted, so at
+    one strike the call's delta minus the put's is exactly 1. #53 discounted both and put
+    the Discount Factor here instead; that is reverted, and D at this minute is 0.993480,
+    so a regression to the discounted convention misses by 0.65% - large enough to catch,
+    small enough that only an exact assertion catches it.
 
     That the difference is exact is what says both sides were priced in one place, at one
     forward, from the strike's one shared volatility. Served as-of the two quotes can be
@@ -274,20 +274,20 @@ def test_a_call_and_its_put_at_one_strike_have_deltas_exactly_the_discount_apart
 
     for row in both_sided:
         gap = row["call"]["delta"] - row["put"]["delta"]
-        assert gap == pytest.approx(chain["discount"], abs=1e-12), row["strike"]
-        assert gap != pytest.approx(1.0, abs=1e-4), "1.0 would mean an undiscounted delta"
+        assert gap == pytest.approx(1.0, abs=1e-12), row["strike"]
+        assert gap != pytest.approx(chain["discount"], abs=1e-4), "D would mean discounted"
 
 
-def test_the_deltas_stay_inside_the_bounds_the_discount_sets(chain):
-    """A call's delta lives in `[0, D]` and a put's in `[-D, 0]` - not `[0, 1]`.
+def test_the_deltas_stay_inside_the_textbook_bounds(chain):
+    """A call's delta lives in `[0, 1]` and a put's in `[-1, 0]`, undiscounted.
 
-    The bound *is* the convention (`docs/calculations.md` section 5), so it is worth
-    asserting on every row rather than spot-checking: an undiscounted delta escapes it
-    only at the deepest strikes, which is exactly where nobody looks.
+    Asserted on every row rather than spot-checked. The bound alone is a weak test - a
+    discounted delta satisfies it too, being strictly smaller - so the test above, which
+    pins the call-put gap at exactly 1, is the one that fixes the convention. This one
+    catches the coarser failure: a delta that has escaped its range entirely.
     """
-    discount = chain["discount"]
     for row in chain["rows"]:
         if row["call"]:
-            assert 0.0 <= row["call"]["delta"] <= discount, row["strike"]
+            assert 0.0 <= row["call"]["delta"] <= 1.0, row["strike"]
         if row["put"]:
-            assert -discount <= row["put"]["delta"] <= 0.0, row["strike"]
+            assert -1.0 <= row["put"]["delta"] <= 0.0, row["strike"]

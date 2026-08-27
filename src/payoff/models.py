@@ -148,14 +148,15 @@ class LegGreeks(BaseModel):
     another Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because
     that is what a per-Leg exposure row means to whoever reads it beside the Legs.
 
-    Conventions are stated once, in `pricing.black76_greeks`, and two of them surprise:
-    **delta and gamma carry the discount factor** (#53), and **theta is a one-session
-    repricing** rather than the analytic derivative.
+    Conventions are stated once, in `pricing.black76_greeks`. One of them surprises:
+    **theta is a one-session repricing** rather than the analytic derivative. Delta and
+    gamma are **undiscounted**, which is the Oracle's convention and the ordinary one.
     """
 
     delta: Finite
-    """Rupees per point of **forward**, never of spot. Bounded by `[0, D]` for a call and
-    `[-D, 0]` for a put - a delta of exactly 1 would mean an undiscounted payoff."""
+    """Rupees per point of **forward**, never of spot. Undiscounted, so bounded by
+    `[0, 1]` for a call and `[-1, 0]` for a put, and a call's delta and its put's differ
+    by exactly 1 at every strike."""
 
     gamma: Finite
     """Delta per point. Two orders of magnitude smaller than the rest at this expiry."""

@@ -525,7 +525,8 @@ True of all four, so stated once:
 | **valuation moment** | the observed one. At the 12:00 IST snapshot of 27 Jan 2026 that is $T = 0.041905$ years, 10.56 trading days from the 10 Feb expiry |
 | **clock** | **trading days**, `dte_days / 252`. A weekend or a holiday consumes nothing (§0) |
 | **volatility** | $\sigma$ per strike from §4's Newton solve on that strike's out-of-the-money quote; one $\sigma$ shared by the call and the put |
-| **discounting** | $D$ from the same §1 fit. All four carry it |
+| **discounting** | $D$ from the same §1 fit. **$
+u$ and $ho$ carry it; $\Delta$ and $\Gamma$ do not** — the Oracle's convention, which this engine matches so that nothing has to be undone at a boundary |
 | **held fixed** | everything not named as the perturbation — in particular $\sigma$ does not move when $\hat F$ does |
 
 $d_1$ and $d_2$ are §4's, unchanged, with $N$ the standard normal CDF and $n$ its density:
@@ -534,17 +535,24 @@ $$d_1 = \frac{\ln(\hat F/K) + \tfrac{1}{2}\sigma^2 T}{\sigma\sqrt{T}}, \qquad d_
 
 #### $\Delta$ — one point of forward
 
-$$\Delta = \frac{\partial V}{\partial \hat F} = D\,N(d_1) \quad \text{(call)}, \qquad
-  D\bigl(N(d_1) - 1\bigr) \quad \text{(put)}$$
+$$\Delta = N(d_1) \quad 	ext{(call)}, \qquad N(d_1) - 1 \quad 	ext{(put)}$$
 
 Perturbs the forward by one index point, holding $\sigma$, $T$ and $D$. Units: rupees of contract
-value per point of forward. Range $[0, D]$ for a call and $[-D, 0]$ for a put — *not* $[0, 1]$,
-because the payoff is discounted; a $\Delta$ of exactly 1 would mean an undiscounted convention.
+value per point of forward. Range $[0, 1]$ for a call and $[-1, 0]$ for a put, so **a call's
+$\Delta$ less its put's is exactly 1** at every strike.
+
+**Undiscounted, and that is a choice.** A strict $\partial V/\partial \hat F$ on
+$V = D[\hat F N(d_1) - K N(d_2)]$ carries the $D$ and lands in $[0, D]$; #53 took that reading
+and shipped it. It is reverted here because the Oracle reports $N(d_1)$, and matching the desk
+beats being pedantic about a factor the desk then has to divide back out. The gap is 0.65% at
+the 12:00 snapshot — `test_api_chain.py` pins it by asserting that a call's delta less its
+put's is exactly 1, to $10^{-12}$.
+
 No time scale: it is a slope at this instant and this forward.
 
 #### $\Gamma$ — how fast $\Delta$ itself moves
 
-$$\Gamma = \frac{\partial^2 V}{\partial \hat F^2} = \frac{D \, n(d_1)}{\hat F \, \sigma \sqrt{T}}$$
+$$\Gamma = rac{n(d_1)}{\hat F \, \sigma \sqrt{T}}$$
 
 The same perturbation, but the *second* derivative: the change in $\Delta$ per point, not the
 change in value. Units: $\Delta$ per point, per contract — two orders of magnitude smaller than

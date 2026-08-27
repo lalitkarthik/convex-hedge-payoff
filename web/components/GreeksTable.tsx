@@ -9,10 +9,11 @@ import { greek, strike as fmtStrike } from "@/lib/format";
  * Strategy's. The per-Leg rows *are* signed by direction and quantity, because that is
  * what a per-Leg exposure means to whoever reads it beside the Legs.
  *
- * Two conventions that surprise (#53, `calculations.md` §5):
+ * Two conventions worth stating (`calculations.md` §5):
  *
- *  - **Delta and gamma are discounted.** A call's delta is bounded by the discount
- *    factor rather than by 1 — a delta of exactly 1 would mean an undiscounted payoff.
+ *  - **Delta and gamma are undiscounted**, matching the Oracle: a call's delta is
+ *    bounded by 1. Vega and rho *do* carry the discount factor — that asymmetry is the
+ *    Oracle's, not ours. (#53 discounted delta and gamma; that is reverted.)
  *  - **Theta is a one-session repricing**, already scaled. Do not divide by 252 again.
  *
  * Nothing here computes a Greek. These are per-contract values the engine produced,

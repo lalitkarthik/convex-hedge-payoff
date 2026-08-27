@@ -85,8 +85,8 @@ export default function AnalyseScreen({
                 <>
                   <GreeksTable legs={legs} rows={analysis.greeks} total={analysis.total_greeks} />
                   <p className="note">
-                    Per contract, no Lot Size. Δ and Γ carry the discount factor, so Δ is bounded
-                    by {analysis.discount.toFixed(6)} rather than by 1. Θ is one trading session.
+                    Per contract, no Lot Size. Δ and Γ are undiscounted, so Δ is bounded by 1 and
+                    a call's Δ less its put's is exactly 1. Θ is one trading session.
                   </p>
                 </>
               )}

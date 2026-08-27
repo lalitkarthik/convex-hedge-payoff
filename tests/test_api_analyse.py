@@ -204,10 +204,10 @@ def test_the_greeks_come_back_with_the_curve_and_not_from_a_second_call(client):
     and keeping it out of here is what lets a Greek and a currency figure scale
     differently without either one branching.
 
-    **Delta is discounted** (#53), which is why the bound below is `D` and not 1. At this
-    minute D is 0.993480, so a bought at-the-money call cannot report more than that. An
-    undiscounted convention would sit just above it - a difference of 1.26% on this day,
-    large enough to matter and small enough to read as rounding.
+    **Delta is undiscounted**, matching the Oracle, so the bound below is 1 and not `D`.
+    #53 discounted it and this assertion read `body["discount"]`; that is reverted. The
+    two conventions differ by 0.65% at this minute, which is why the call-put gap test in
+    `test_api_chain.py` - exact to 1e-12 - is the one that actually pins the convention.
     """
     response = analyse(client, [{"strike": STRIKE, "option_type": "CE", "direction": 1}])
     assert response.status_code == 200, response.text
@@ -220,7 +220,7 @@ def test_the_greeks_come_back_with_the_curve_and_not_from_a_second_call(client):
     leg = body["greeks"][0]
     assert set(leg) == set(GREEKS)
 
-    assert 0.0 < leg["delta"] < body["discount"], "a call's delta is bounded by D, not by 1"
+    assert 0.0 < leg["delta"] < 1.0, "a call's delta is bounded by 1, undiscounted"
     assert leg["gamma"] > 0.0, "long options are gamma-positive, call or put alike"
     assert leg["vega"] > 0.0
     assert leg["theta"] < 0.0, "a bought option loses value as a session passes"

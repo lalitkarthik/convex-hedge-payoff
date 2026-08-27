@@ -257,7 +257,7 @@
         "type": "object"
       },
       "LegGreeks": {
-        "description": "One Leg's exposures, or a whole Strategy's - the shape is the same either way.\n\n**Per contract**: no Lot Size and no number of lots. Those are presentation\nmultipliers (#29) and a Greek that carried them could not be compared against\nanother Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because\nthat is what a per-Leg exposure row means to whoever reads it beside the Legs.\n\nConventions are stated once, in `pricing.black76_greeks`, and two of them surprise:\n**delta and gamma carry the discount factor** (#53), and **theta is a one-session\nrepricing** rather than the analytic derivative.",
+        "description": "One Leg's exposures, or a whole Strategy's - the shape is the same either way.\n\n**Per contract**: no Lot Size and no number of lots. Those are presentation\nmultipliers (#29) and a Greek that carried them could not be compared against\nanother Strategy's. The per-Leg rows *are* signed by Direction and Quantity, because\nthat is what a per-Leg exposure row means to whoever reads it beside the Legs.\n\nConventions are stated once, in `pricing.black76_greeks`. One of them surprises:\n**theta is a one-session repricing** rather than the analytic derivative. Delta and\ngamma are **undiscounted**, which is the Oracle's convention and the ordinary one.",
         "properties": {
           "delta": {
             "title": "Delta",

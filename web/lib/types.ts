@@ -22,8 +22,9 @@
  *
  *  - `max_profit` / `max_loss` are `number | null`, and **`null` means Unlimited**.
  *    Never an infinity token, never a string, never blank (CONTEXT.md).
- *  - `delta` and `gamma` are **discounted** (#53), so a call's delta is bounded by the
- *    discount factor rather than by 1.
+ *  - `delta` and `gamma` are **undiscounted**, so a call's delta is bounded by 1 and a
+ *    call's delta less its put's is exactly 1 at every strike. `vega` and `rho` do carry
+ *    the discount factor.
  */
 
 export type OptionType = "CE" | "PE";
