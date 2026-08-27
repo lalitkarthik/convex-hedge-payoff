@@ -38,6 +38,12 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt -r requirements-dev.txt
+      # The notebook reads the served store for at-the-money; #66 split the seed path
+      # from the serving path, so the tree must exist first.
+      - name: derive the runtime tree
+        run: python scripts/build_runtime.py
+        env:
+          PYTHONPATH: src
       - name: execute notebooks
         run: |
           jupyter nbconvert --to notebook --execute \
