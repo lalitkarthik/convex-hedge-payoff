@@ -288,17 +288,23 @@ def test_asking_the_chain_for_a_date_that_was_never_built_names_the_date(client)
     indistinguishable on screen from the one that was asked for, while a session that
     resolves says which pair it resolved to.
 
+    The date is deliberately one the dataset does not contain at all, rather than a
+    trading date that merely has not been built yet. `conftest` builds a three-date
+    subset for speed, so any real date reads as missing until someone runs a full build
+    in the same tree - and then this test would fail for a reason unrelated to what it
+    grades.
+
     The message is the point. Filtering the store to a date it does not hold yields an
     empty frame, and the first thing downstream to notice used to be the as-of slice,
     which reported `0 -- is not quoted at or before this moment` - a true sentence about
     a strike, in answer to a question about a date. #31 owns the body's shape; what is
     graded here is that the words identify the thing that is actually missing.
     """
-    response = client.get("/chain", params={"moment": "2026-01-27T06:30:00", "date": "2026-01-08"})
+    response = client.get("/chain", params={"moment": "2026-01-27T06:30:00", "date": "2026-03-16"})
 
     assert response.status_code == 404, response.text
     detail = response.json()["detail"]
-    assert "2026-01-08" in detail, f"the date that is missing has to be in it: {detail}"
+    assert "2026-03-16" in detail, f"the date that is missing has to be in it: {detail}"
     assert "quoted" not in detail, "the old message blamed a strike for a missing date"
 
 
