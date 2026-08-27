@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { strategyHref, type View } from "@/lib/strategy-url";
+
 /**
  * A link that names a Strategy nobody can read.
  *
@@ -13,10 +15,10 @@ import Link from "next/link";
  */
 export default function LinkProblem({
   message,
-  moment,
+  view,
 }: {
   message: string;
-  moment: string;
+  view: View;
 }) {
   return (
     <div className="problem">
@@ -26,7 +28,10 @@ export default function LinkProblem({
         Nothing has been analysed, because analysing part of a Strategy would show a chart
         of a position that was never built.
       </p>
-      <Link className="problem-back" href={`/?moment=${encodeURIComponent(moment)}`}>
+      {/* The date and the Expiry survive the unreadable Legs: only the Strategy could
+          not be read, and dropping the view as well would send a trader back to a
+          different day than the one their link named (#68). */}
+      <Link className="problem-back" href={strategyHref("/", view, [])}>
         Start from the Chain →
       </Link>
     </div>

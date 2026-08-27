@@ -22,11 +22,18 @@ Delta is the exception, and deliberately so: it is **computed on every request**
 because it is a property of the model at the moment being asked about rather than a fact
 about a print. It costs one vectorised Black-76 call over the ninety-odd strikes in view.
 
-**Every read takes a date.** Until #67 the store held one, and this module filtered to it
-by a constant. Now it holds twenty-four, and the date comes from the request - either
-explicitly or off the moment, which already carries one. `ANCHOR_DATE` survives as the
-default for the session endpoint, which has no moment to read one from; #68 makes the
-date a thing a trader picks.
+**Every read takes a date, and may take an Expiry.** Until #67 the store held one date
+and this module filtered to it by a constant. Now it holds twenty-four, and the date
+comes from the request - either explicitly or off the moment, which already carries one.
+`ANCHOR_DATE` survives as the default for the session endpoint, which has no moment to
+read one from.
+
+The Expiry is optional and stays optional (#68). Omitted, a read covers every series that
+traded that day, which is what a caller who was never offered a choice means. Named, it
+covers exactly one. Which pairs exist is not a question for this module - `catalog.py`
+answers it off the manifest, and `chain_scan` refuses a pair the manifest does not hold
+rather than filtering the store down to nothing and letting the as-of slice report a
+strike that was never quoted.
 
 The core never sees a Chain. A strike absent from it raises **here** (#23).
 """
@@ -37,23 +44,28 @@ from functools import lru_cache
 import numpy as np
 import polars as pl
 
+from payoff import catalog, store
 from payoff import forward as forward_maths
-from payoff import store
 from payoff.models import ChainQuote, ChainResponse, ChainRow, Leg, LegRequest
 from payoff.pricing import TRADING_DAYS_PER_YEAR, black76_greeks
 
 ANCHOR_DATE = date(2026, 1, 27)
 """The date served when a caller names none.
 
-Every published figure in `docs/calculations.md` was measured on it, and `/session` still
-describes it, because a session is a day and until #68 there is no control that would let
-a trader say which. It is no longer a filter that makes a promise structural: #67 built
-the other twenty-three and `/chain` reaches them.
+Every published figure in `docs/calculations.md` was measured on it, so it is where
+`/session` opens when a link names no date: the one day whose numbers a reader can check
+against the document. A **default**, not a filter - #67 built the other twenty-three,
+`/chain` reaches them, and #68 gives a trader the control that names one.
 """
 
-MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+MONTHS = catalog.MONTHS
 """Spelled out rather than left to `strftime('%b')`, which is locale-dependent: the Expiry
-label is asserted as `10FEB26` and a machine set to fr_FR would serve `10FÉVR.26`."""
+label is asserted as `10FEB26` and a machine set to fr_FR would serve `10FÉVR.26`.
+
+The table itself moved to `catalog` when #68 gave an Expiry label a way *in* as well as
+out - a dropdown and a URL both hand one back, and reading it is that module's job. Kept
+under this name because it is the one `seed.MONTHS` points at as its opposite number.
+"""
 
 
 class StrikeNotQuoted(LookupError):
@@ -105,14 +117,25 @@ def _on(moment: str | datetime, day: str | date | None = None) -> date:
 
 
 @lru_cache(maxsize=32)
-def chain_scan(day: date = ANCHOR_DATE) -> pl.LazyFrame:
-    """The lazy plan every read below is composed onto, filtered to one date.
+def chain_scan(day: date = ANCHOR_DATE, expiry: date | None = None) -> pl.LazyFrame:
+    """The lazy plan every read below is composed onto, filtered to one date and Expiry.
 
     Cached because building the plan globs the tree, not because it holds rows - it holds
     none. Collecting it twice reads the parquet twice, which is the point: the filter
-    goes to the reader rather than to a frame already in memory, and the date reaches it
-    as a **partition predicate**, so the other twenty-three days are skipped before a
-    byte of column data is read.
+    goes to the reader rather than to a frame already in memory, and both keys reach it
+    as **partition predicates**, so the other twenty-three days are skipped before a byte
+    of column data is read.
+
+    `expiry` is optional and **not** because one Expiry exists (#68). Omitted, the plan
+    covers every series that traded that day, which is what a caller who has not been
+    given a choice means. Named, it covers exactly one - and the day a second series
+    appears that is the difference between a Chain and two Chains interleaved, which is
+    not something a client could see on screen.
+
+    The pair is checked against the manifest *before* the plan is built, so a date that
+    was never derived says so here. Filtering to it would produce an empty frame instead,
+    and the first thing to notice used to be the as-of slice, which called it a strike
+    that was not quoted. That is a true sentence about the wrong subject.
     """
     root = store.runtime_root()
     dataset = store.dataset_root(root)
@@ -122,11 +145,16 @@ def chain_scan(day: date = ANCHOR_DATE) -> pl.LazyFrame:
             "derive it from the raw data, or point PAYOFF_RUNTIME at a tree that has "
             "already been built."
         )
-    return store.scan(root).filter(pl.col("date") == day)
+    catalog.require(day, expiry)
+
+    plan = store.scan(root).filter(pl.col("date") == day)
+    return plan if expiry is None else plan.filter(pl.col("expiry") == expiry)
 
 
 @lru_cache(maxsize=512)
-def minute_slice(day: date, moment: str | datetime) -> pl.DataFrame:
+def minute_slice(
+    day: date, moment: str | datetime, expiry: date | None = None
+) -> pl.DataFrame:
     """Every row of the latest stored minute at or before `moment`.
 
     One minute of the filled Chain: a row for every strike that has traded by now,
@@ -137,7 +165,7 @@ def minute_slice(day: date, moment: str | datetime) -> pl.DataFrame:
     minute cannot produce two different slices.
     """
     rows = (
-        chain_scan(day)
+        chain_scan(day, expiry)
         .filter(pl.col("timestamp_utc") <= _at(moment))
         .filter(pl.col("timestamp_utc") == pl.col("timestamp_utc").max())
         .collect()
@@ -147,7 +175,11 @@ def minute_slice(day: date, moment: str | datetime) -> pl.DataFrame:
     return rows
 
 
-def strict_slice(moment: str | datetime, day: str | date | None = None) -> pl.DataFrame:
+def strict_slice(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> pl.DataFrame:
     """Every quote **actually stamped** at that minute, rather than carried into it.
 
     The counterpart to `snapshot()`, and not a substitute for it. A chain is served
@@ -159,7 +191,7 @@ def strict_slice(moment: str | datetime, day: str | date | None = None) -> pl.Da
     exactly the rows that existed before the carry-forward, which is why every figure
     derived from this view is unchanged by #67.
     """
-    rows = minute_slice(_on(moment, day), moment)
+    rows = minute_slice(_on(moment, day), moment, catalog.as_expiry(expiry))
     return rows.filter(pl.col("quoted_at") == pl.col("timestamp_utc"))
 
 
@@ -177,7 +209,9 @@ def paired_strikes(rows: pl.DataFrame) -> np.ndarray:
 
 
 def forward_at(
-    moment: str | datetime, day: str | date | None = None
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
 ) -> forward_maths.ForwardFit:
     """The Forward and Discount Factor this moment implies (#51) - **read, not fitted**.
 
@@ -191,7 +225,7 @@ def forward_at(
     Off the **strict** rows, because that is the set the regression actually ran on; the
     filled minute would count strikes whose last print was hours ago.
     """
-    rows = strict_slice(moment, day)
+    rows = strict_slice(moment, day, expiry)
     return forward_maths.ForwardFit(
         forward=float(rows["forward"][0]),
         discount=float(rows["discount"][0]),
@@ -218,7 +252,9 @@ def expiry_delta(forward: float, strikes: np.ndarray, *, is_call: bool) -> np.nd
 
 
 @lru_cache(maxsize=256)
-def _snapshot(day: date, moment: str | datetime) -> pl.DataFrame:
+def _snapshot(
+    day: date, moment: str | datetime, expiry: date | None = None
+) -> pl.DataFrame:
     """The Chain as-of `moment`: the last known quote for every strike at or before it.
 
     Every row carries `age_minutes`. On the anchor day the median quote is one minute
@@ -228,7 +264,7 @@ def _snapshot(day: date, moment: str | datetime) -> pl.DataFrame:
     Cached per moment. Callers treat the frame as read-only.
     """
     at = _at(moment)
-    latest = minute_slice(day, moment).with_columns(
+    latest = minute_slice(day, moment, expiry).with_columns(
         # Implied volatility is a property of the STRIKE, not of the side. Served as-of,
         # a call and its put can be minutes apart: of the 41 both-sided strikes at the
         # anchor minute only 9 share a minute, and the rest disagree by up to 0.0275. The
@@ -252,7 +288,7 @@ def _snapshot(day: date, moment: str | datetime) -> pl.DataFrame:
     # of the model now, not of when a print happened to land; pricing the two sides in
     # two different minutes gives a call and a put whose deltas do not even satisfy
     # parity, which is what the source file's own columns do here.
-    fit = forward_at(moment, day)
+    fit = forward_at(moment, day, expiry)
     is_call = (latest["option_type"] == "CE").to_numpy()
     strikes = latest["strike"].to_numpy()
     volatility = latest["strike_iv"].to_numpy()
@@ -279,22 +315,34 @@ def _snapshot(day: date, moment: str | datetime) -> pl.DataFrame:
     return latest.with_columns(delta=pl.Series("delta", delta))
 
 
-def snapshot(moment: str | datetime, day: str | date | None = None) -> pl.DataFrame:
+def snapshot(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> pl.DataFrame:
     """The Chain as-of `moment`, on the date the caller named or the moment implies."""
-    return _snapshot(_on(moment, day), moment)
+    return _snapshot(_on(moment, day), moment, catalog.as_expiry(expiry))
 
 
-def spot_at(moment: str | datetime, day: str | date | None = None) -> float:
+def spot_at(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> float:
     """The NIFTY level at the moment - what the header shows.
 
     Off the strict minute rather than off the last row of the day up to here, which is
     the same number: Spot is observed once per minute and repeats across every strike in
     it, which is why #64 moves it into a summary artifact of its own.
     """
-    return float(strict_slice(moment, day)["spot"][0])
+    return float(strict_slice(moment, day, expiry)["spot"][0])
 
 
-def at_the_money(moment: str | datetime, day: str | date | None = None) -> float:
+def at_the_money(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> float:
     """The quoted strike nearest the **Forward** (#51).
 
     Not nearest Spot. The basis runs to +118.87 at the anchor minute, which is more than
@@ -310,12 +358,13 @@ def at_the_money(moment: str | datetime, day: str | date | None = None) -> float
     that set is empty - at the close, nothing quotes both - the choice widens to every
     strike quoted that minute rather than failing: a coarser answer beats none.
     """
-    rows = strict_slice(moment, day)
+    rows = strict_slice(moment, day, expiry)
     paired = paired_strikes(rows)
     candidates = paired if paired.size else np.sort(rows["strike"].unique().to_numpy())
     if not len(candidates):
         raise StrikeNotQuoted(0.0, "--")
-    return float(candidates[np.abs(candidates - forward_at(moment, day).forward).argmin()])
+    forward = forward_at(moment, day, expiry).forward
+    return float(candidates[np.abs(candidates - forward).argmin()])
 
 
 def resolve_legs(
@@ -370,22 +419,25 @@ def resolve_legs(
 
 
 @lru_cache(maxsize=32)
-def expiry_label(day: date = ANCHOR_DATE) -> str:
+def expiry_label(day: date = ANCHOR_DATE, expiry: date | None = None) -> str:
     """The Expiry this date traded, formatted off the **partition key**.
 
     `expiry=2026-02-10` -> `10FEB26`. It used to be read off an instrument name inside
     the file; now it comes from the path the tree was written under, which is the one
-    place a second Expiry would ever announce itself. There is exactly one across all
-    twenty-four dates, which is why the header shows text rather than a dropdown - and
-    why the manifest (#67) records the pairing anyway, so the day a second series appears
-    nothing has to be migrated.
+    place a second Expiry would ever announce itself.
+
+    Read off the **scan** rather than off `expiry` directly, so that the label is the one
+    the rows actually carry and not the one the caller believed. Where no Expiry was
+    named the answer is the day's first, which is what "the Expiry of this date" can mean
+    when the caller was not given a choice; #68's dropdown always names one, and
+    `catalog.expiries` is what it lists.
     """
-    expiry = chain_scan(day).select(pl.col("expiry").first()).collect().item()
-    return f"{expiry.day:02d}{MONTHS[expiry.month - 1]}{expiry.year % 100:02d}"
+    on = chain_scan(day, expiry).select(pl.col("expiry").first()).collect().item()
+    return catalog.label(on)
 
 
 @lru_cache(maxsize=32)
-def moments(day: date = ANCHOR_DATE) -> list[str]:
+def moments(day: date = ANCHOR_DATE, expiry: date | None = None) -> list[str]:
     """Every minute a client may ask for, in session order.
 
     **Derived from the data, never from a clock.** 09:15 to 15:30 IST is 376 minutes on
@@ -400,13 +452,19 @@ def moments(day: date = ANCHOR_DATE) -> list[str]:
     it is the one `Date` is specified to parse.
     """
     stamps = (
-        chain_scan(day).select("timestamp_utc").unique().sort("timestamp_utc").collect()
+        chain_scan(day, expiry)
+        .select("timestamp_utc")
+        .unique()
+        .sort("timestamp_utc")
+        .collect()
     )
     return [stamp.isoformat() for stamp in stamps["timestamp_utc"]]
 
 
 @lru_cache(maxsize=32)
-def strike_bounds(day: date = ANCHOR_DATE) -> tuple[float, float]:
+def strike_bounds(
+    day: date = ANCHOR_DATE, expiry: date | None = None
+) -> tuple[float, float]:
     """The lowest and highest strike quoted anywhere in the session.
 
     The day's range, not a minute's: a single minute quotes fewer strikes than the day
@@ -414,7 +472,7 @@ def strike_bounds(day: date = ANCHOR_DATE) -> tuple[float, float]:
     charts of the same Strategy incomparable.
     """
     low, high = (
-        chain_scan(day)
+        chain_scan(day, expiry)
         .select(pl.col("strike").min().alias("low"), pl.col("strike").max().alias("high"))
         .collect()
         .row(0)
@@ -422,7 +480,11 @@ def strike_bounds(day: date = ANCHOR_DATE) -> tuple[float, float]:
     return float(low), float(high)
 
 
-def as_of_view(moment: str | datetime, day: str | date | None = None) -> ChainResponse:
+def as_of_view(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> ChainResponse:
     """The Chain a trader sees: one row per strike, call and put either side.
 
     Served as-of, because a strict reading of "the Chain at this moment" is nine
@@ -430,9 +492,10 @@ def as_of_view(moment: str | datetime, day: str | date | None = None) -> ChainRe
     of this day, none at all. The last known quote at or before the moment gives 41.
     """
     on = _on(moment, day)
+    series = catalog.as_expiry(expiry)
     sides: dict[float, dict[str, ChainQuote]] = {}
     strike_iv: dict[float, float | None] = {}
-    for quote in snapshot(moment, on).iter_rows(named=True):
+    for quote in snapshot(moment, on, series).iter_rows(named=True):
         volatility = quote["strike_iv"]
         strike_iv[float(quote["strike"])] = None if volatility is None else float(volatility)
         side = "call" if quote["option_type"] == "CE" else "put"
@@ -453,11 +516,11 @@ def as_of_view(moment: str | datetime, day: str | date | None = None) -> ChainRe
         )
         for strike in sorted(sides)
     ]
-    fit = forward_at(moment, on)
+    fit = forward_at(moment, on, series)
     return ChainResponse(
         moment=_at(moment).isoformat(),
-        spot=spot_at(moment, on),
-        expiry=expiry_label(on),
+        spot=spot_at(moment, on, series),
+        expiry=expiry_label(on, series),
         forward=fit.forward,
         discount=fit.discount,
         forward_method=fit.method,

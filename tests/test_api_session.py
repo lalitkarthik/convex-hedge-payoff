@@ -10,6 +10,19 @@ ones `/chain` answers on, its expiry is the one `/chain` publishes, its presets 
 ones `/presets` offers. A session that describes a day the rest of the API does not serve
 is worse than no session at all - it fails at the point a trader clicks, not here.
 
+**Widened again for #68**, and for the same reason a third time. Two dropdowns above the
+Chain populate from `dates` and `expiries` here, so the agreement now has to hold across
+every pair either dropdown can offer: every date it lists must be one `/chain` serves,
+and every Expiry it lists against a date must be one `/chain` serves *on that date*. A
+list built by walking a tree, or by a build script writing a file, is exactly the drift
+this endpoint exists to prevent - and a pairing that is merely plausible is worse than
+none, because it fails at the click rather than here.
+
+`tests/conftest.py` builds three dates and says why, so the assertions below are written
+against **what the store holds** rather than against twenty-four. That is not a weakening:
+the claim being graded is that the two agree, and it is false in the same way at three
+dates as at twenty-four.
+
 As everywhere in this file's neighbours, nothing imports `chain` or `presets`: what is
 graded is what comes back over HTTP.
 """
@@ -126,3 +139,197 @@ def test_no_field_is_null(session):
     for name, value in session.items():
         assert value is not None, f"{name} is null"
         assert value != [], f"{name} is empty"
+
+
+# --------------------------------------------------------------------------------------
+# #68: the two dropdowns, and the agreement that lets them be dropdowns at all.
+# --------------------------------------------------------------------------------------
+
+
+def session_for(client: TestClient, **asked: str) -> dict:
+    """A session for one pair, asked for the way the dropdowns ask for it."""
+    response = client.get("/session", params=asked)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_session_names_the_pair_it_describes_and_lists_what_else_exists(session):
+    """The four fields the two dropdowns are built out of, and how they relate.
+
+    `date` and `expiry` are the **selected** pair; `dates` and `expiries` are what the
+    two lists offer. The selected one being a member of its own list is not a tautology
+    worth skipping: a resolved pair that is not in the list a client renders shows a
+    dropdown with nothing highlighted, and a trader cannot tell what they are looking at.
+    """
+    assert session["dates"] == sorted(session["dates"]), "a dropdown reads in order"
+    assert session["expiries"] == sorted(session["expiries"])
+
+    assert session["date"] in session["dates"]
+    assert session["expiry"] in session["expiries"]
+
+    assert session["date"] == ANCHOR[:10], "a link naming no date opens on the anchor"
+
+
+def test_every_date_it_lists_is_one_the_chain_endpoint_answers_on(session, client):
+    """The agreement, in the direction the date dropdown is read.
+
+    A date offered here that `/chain` will not serve is a menu entry that produces an
+    empty screen, and it fails at the click rather than at the list. Swept across every
+    date rather than spot-checked, because the list is short by construction - it is the
+    manifest, and the manifest is one row per pair.
+
+    Each date is asked for at **its own** first moment, taken from its own session. A
+    moment from another day would be the more obvious test and would grade the wrong
+    thing: it would pass on any implementation that ignored `date` entirely.
+    """
+    for day in session["dates"]:
+        theirs = session_for(client, date=day)
+        assert theirs["date"] == day, "the date asked for is the date described"
+
+        response = client.get("/chain", params={"moment": theirs["first_moment"], "date": day})
+        assert response.status_code == 200, f"{day} -> {response.text}"
+        assert response.json()["moment"] == theirs["first_moment"]
+
+
+def test_every_expiry_it_lists_against_a_date_is_one_the_chain_serves_on_that_date(
+    session, client
+):
+    """The agreement in the direction the Expiry dropdown is read - **per date**.
+
+    The pairing is what is being graded, not the list. One Expiry exists in this dataset,
+    so every assertion below happens to run once; none of them is written in a way that
+    would still pass if the pairing were dropped and a single Expiry assumed, because
+    each is a lookup keyed by the date it belongs to.
+
+    `/chain` echoing the Expiry back is what makes the round trip closed: the label the
+    dropdown showed, the label the URL carried and the label the Chain published are one
+    string, compared without a conversion in the middle.
+    """
+    for day in session["dates"]:
+        theirs = session_for(client, date=day)
+        assert theirs["expiries"], f"{day} is in the store, so something traded on it"
+
+        for expiry in theirs["expiries"]:
+            response = client.get(
+                "/chain",
+                params={"moment": theirs["first_moment"], "date": day, "expiry": expiry},
+            )
+            assert response.status_code == 200, f"{day}/{expiry} -> {response.text}"
+            assert response.json()["expiry"] == expiry
+
+
+def test_a_date_carries_its_own_minutes_rather_than_the_one_before_it(session, client):
+    """Picking a date has to move the time control too, and it is easy for it not to.
+
+    7 January quoted 150 minutes and the anchor 376. A session endpoint that took a date
+    and returned the anchor's minutes anyway would look completely correct - the dropdown
+    would work, the header would update - right up to a trader dragging the slider past
+    the 150th stop into minutes that day never had.
+    """
+    sparse = session_for(client, date="2026-01-07")
+
+    assert sparse["moment_count"] == len(sparse["moments"])
+    assert sparse["moment_count"] != session["moment_count"]
+    assert all(stamp.startswith("2026-01-07") for stamp in sparse["moments"])
+    assert sparse["first_moment"] == sparse["moments"][0]
+    assert sparse["last_moment"] == sparse["moments"][-1]
+
+
+def test_choosing_a_date_that_never_traded_the_held_expiry_resolves_to_a_pair_that_exists(
+    session, client
+):
+    """#68's third criterion, and the reason the resolution lives on the server.
+
+    A trader changes the date; the Expiry in the URL is one interaction behind, and on a
+    dataset with more than one series it may be one the new date never traded. The pair
+    that comes back is one the store holds - and because the client renders `date` and
+    `expiry` rather than what it sent, the Chain is never empty and the dropdown is never
+    showing a selection that is not in its own list.
+
+    Asserted through an Expiry that exists nowhere in the dataset, which is the same
+    branch a real mispairing takes and the only one this dataset can reach.
+    """
+    resolved = session_for(client, date="2026-01-07", expiry="10MAR26")
+
+    assert resolved["date"] == "2026-01-07", "the date is what was clicked; it wins"
+    assert resolved["expiry"] in resolved["expiries"]
+
+    served = client.get(
+        "/chain",
+        params={
+            "moment": resolved["first_moment"],
+            "date": resolved["date"],
+            "expiry": resolved["expiry"],
+        },
+    )
+    assert served.status_code == 200, served.text
+    assert served.json()["rows"], "a resolved pair is a Chain, not an empty one"
+
+
+def test_a_link_naming_a_date_that_was_never_built_falls_back_rather_than_failing(client):
+    """The session is how a client learns what exists, so it has to answer.
+
+    A hand-edited or truncated link is the likeliest way to hold a date the store does
+    not have, and an error page there teaches a trader nothing about which dates it does
+    have. Falling back to the anchor shows a real day *and* hands over the list that
+    would have been correct - which is the useful reply.
+    """
+    stray = session_for(client, date="1999-01-01")
+
+    assert stray["date"] == ANCHOR[:10]
+    assert stray["moments"], "a real day, not an empty session"
+    assert "1999-01-01" not in stray["dates"]
+
+
+def test_asking_the_chain_for_a_date_that_was_never_built_names_the_date(client):
+    """The counterpart, and the opposite rule: `/chain` is asked for one specific thing.
+
+    Strict rather than forgiving, because a Chain quietly served for a different day is
+    indistinguishable on screen from the one that was asked for, while a session that
+    resolves says which pair it resolved to.
+
+    The message is the point. Filtering the store to a date it does not hold yields an
+    empty frame, and the first thing downstream to notice used to be the as-of slice,
+    which reported `0 -- is not quoted at or before this moment` - a true sentence about
+    a strike, in answer to a question about a date. #31 owns the body's shape; what is
+    graded here is that the words identify the thing that is actually missing.
+    """
+    response = client.get("/chain", params={"moment": "2026-01-27T06:30:00", "date": "2026-01-08"})
+
+    assert response.status_code == 404, response.text
+    detail = response.json()["detail"]
+    assert "2026-01-08" in detail, f"the date that is missing has to be in it: {detail}"
+    assert "quoted" not in detail, "the old message blamed a strike for a missing date"
+
+
+def test_asking_the_chain_for_an_expiry_that_date_did_not_trade_names_what_it_did(
+    session, client
+):
+    """The pairing, refused at the other end from where the dropdown prevents it.
+
+    A dropdown that only offers real pairs is not a guarantee: a link is hand-editable
+    and the API is reachable without one. Naming what the date *did* trade is what makes
+    the refusal actionable rather than merely correct.
+    """
+    response = client.get(
+        "/chain",
+        params={"moment": ANCHOR, "date": ANCHOR[:10], "expiry": "10MAR26"},
+    )
+
+    assert response.status_code == 404, response.text
+    detail = response.json()["detail"]
+    assert "10MAR26" in detail
+    assert session["expiry"] in detail, f"say what would have worked: {detail}"
+
+
+def test_an_expiry_that_is_not_a_label_is_refused_rather_than_guessed_at(client):
+    """422 and not 404: nothing was looked up, so nothing is missing.
+
+    One spelling on the wire, and it is the one the dropdown shows and the URL carries.
+    Reading an ISO date here as well would give the same Expiry two spellings, and two
+    links describing one view would not compare equal.
+    """
+    response = client.get("/chain", params={"moment": ANCHOR, "expiry": "2026-02-10"})
+
+    assert response.status_code == 422, response.text
+    assert "10FEB26" in response.json()["detail"], "say what the form is"

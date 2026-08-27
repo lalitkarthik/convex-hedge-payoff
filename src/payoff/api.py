@@ -12,7 +12,7 @@ after the chart they belong to.
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from payoff import chain, presets, strategy
+from payoff import catalog, chain, presets, strategy
 from payoff.models import (
     AnalysisRequest,
     AnalysisResponse,
@@ -29,6 +29,25 @@ def _unknown_preset(request: Request, error: presets.UnknownPreset) -> JSONRespo
     """A name the picker does not offer. The status is here because a 500 would say the
     server broke and it did not; **#31 owns what the body looks like.**"""
     return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(catalog.NotStored)
+def _not_stored(request: Request, error: catalog.NotStored) -> JSONResponse:
+    """A date or an Expiry the build never wrote.
+
+    404 rather than 500 for the same reason as above - the request is well-formed and the
+    thing it names is simply not there - and the message is the whole improvement. This
+    used to surface as `0 -- is not quoted at or before this moment`, because a date that
+    was never built filters the store to nothing and the as-of slice was the first thing
+    to notice. True, and about the wrong subject. **#31 owns the body's shape.**
+    """
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(catalog.UnreadableExpiry)
+def _unreadable_expiry(request: Request, error: catalog.UnreadableExpiry) -> JSONResponse:
+    """Text that is not an Expiry label. 422: nothing was looked up, so nothing is missing."""
+    return JSONResponse(status_code=422, content={"detail": str(error)})
 
 
 @app.post("/analyse", response_model=AnalysisResponse)
@@ -54,22 +73,35 @@ def analyse(request: AnalysisRequest) -> AnalysisResponse:
 
 
 @app.get("/session", response_model=SessionResponse)
-def read_session() -> SessionResponse:
-    """The day itself: which minutes exist, what expires, and what the picker offers.
+def read_session(date: str | None = None, expiry: str | None = None) -> SessionResponse:
+    """One day and one Expiry: which minutes exist, what else exists, what the picker offers.
 
-    Asked once, at boot. Everything else takes a `moment`, and this is the only way to
-    learn which moments there are - so it is served from the data rather than from a
-    clock, and a client that renders 376 stops is rendering 376 minutes that quoted.
+    Asked whenever either dropdown moves. Everything else takes a `moment`, and this is
+    the only way to learn which moments there are - so it is served from the data rather
+    than from a clock, and a client that renders 376 stops is rendering 376 minutes that
+    quoted. `dates` and `expiries` are the same argument one level up (#68): the two
+    dropdowns are populated from here and never from a file, because a generated list is
+    free to describe a day the engine would not serve.
+
+    **The pair is resolved, not merely validated.** A trader changes the date and the
+    Expiry in the URL is one interaction behind; `catalog.resolve` returns a pair the
+    store actually holds, and `date` and `expiry` in the response say which - so what
+    comes back is never an empty Chain and never a session describing a day `/chain`
+    would refuse. `/chain` itself is strict, because it is asked for one specific thing.
     """
-    stamps = chain.moments()
-    low, high = chain.strike_bounds()
+    on, series = catalog.resolve(date, expiry, default=chain.ANCHOR_DATE)
+    stamps = chain.moments(on, series)
+    low, high = chain.strike_bounds(on, series)
 
     return SessionResponse(
+        date=on.isoformat(),
+        dates=[day.isoformat() for day in catalog.dates()],
         moments=stamps,
         moment_count=len(stamps),
         first_moment=stamps[0],
         last_moment=stamps[-1],
-        expiry=chain.expiry_label(),
+        expiry=chain.expiry_label(on, series),
+        expiries=[catalog.label(one) for one in catalog.expiries(on)],
         strike_min=low,
         strike_max=high,
         presets=list(presets.PRESETS),
@@ -77,16 +109,28 @@ def read_session() -> SessionResponse:
 
 
 @app.get("/chain", response_model=ChainResponse)
-def read_chain(moment: str, date: str | None = None) -> ChainResponse:
+def read_chain(
+    moment: str, date: str | None = None, expiry: str | None = None
+) -> ChainResponse:
     """The Chain as-of a moment: one row per strike, call and put either side.
 
-    `date` is the trading date, which is what the store is keyed by and what a link will
-    carry once there is a control that picks one (#68). Omitted, it is taken off the
-    moment: the session runs 03:45 to 10:00 UTC, so it never crosses a midnight and the
-    two cannot disagree. Naming it is what makes the twenty-three days #67 built reachable
-    without a client having to know that.
+    `date` is the trading date, which is what the store is keyed by and what a link
+    carries now that a control picks one (#68). Omitted, it is taken off the moment: the
+    session runs 03:45 to 10:00 UTC, so it never crosses a midnight and the two cannot
+    disagree. Naming it is what makes the twenty-three days #67 built reachable without a
+    client having to know that.
+
+    `expiry` is the other partition key, spelled as the response spells it - `10FEB26`.
+    Omitted, the Chain covers every series that traded that day, which is what it meant
+    before there was a second dropdown to name one. Named, it covers exactly one; the day
+    a second series exists, the difference is a Chain against two interleaved, and
+    nothing on screen would say which was being read.
+
+    **Strict, unlike `/session`.** A pair the store does not hold is a 404 naming what it
+    does hold, not a quiet substitution: a Chain that is not the one that was asked for
+    is indistinguishable from one that is.
     """
-    return chain.as_of_view(moment, date)
+    return chain.as_of_view(moment, date, expiry)
 
 
 @app.get("/presets", response_model=PresetResponse)
