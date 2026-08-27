@@ -298,7 +298,28 @@ class SessionResponse(BaseModel):
 
     Bounds and counts as well as the list itself, because a slider needs its ends and a
     trader reading "376" learns something the array does not tell them at a glance.
+
+    A session is **one date and one Expiry** (#68), and it carries the two lists a client
+    picks the next one from. That is what makes the dropdowns above the Chain open
+    without reading a data file, and it is the same argument as the paragraph above: a
+    list of dates written by a build script is a list that can drift from the tree the
+    engine will actually serve.
+
+    `date` and `expiry` name the pair this response describes, and they are **not
+    necessarily the pair that was asked for**. A request naming a date and an Expiry that
+    date did not trade is resolved to one that exists rather than refused, so a client
+    renders these two fields rather than what it sent.
     """
+
+    date: str
+    """The trading date this session describes, ISO 8601, as `/chain` accepts it."""
+
+    dates: list[str]
+    """Every trading date in the store, ascending. What the date dropdown lists.
+
+    Off the manifest rather than off a directory walk or a clock: it is the index over
+    the partitions, and it is written last by the build so it cannot advertise a day that
+    is no longer stored."""
 
     moments: list[str]
     """Every minute that quoted, in session order, spelled as `/chain` accepts it.
@@ -311,7 +332,16 @@ class SessionResponse(BaseModel):
     last_moment: str
 
     expiry: str
-    """The single Expiry this dataset contains - text, not a dropdown."""
+    """The Expiry this session describes, spelled as `ChainResponse.expiry` spells it -
+    `10FEB26` - so a client can compare the two without a conversion in the middle."""
+
+    expiries: list[str]
+    """Every Expiry that traded on `date`, ascending. What the Expiry dropdown lists.
+
+    Only the ones that traded **that day**, which is the point: a dropdown offering a
+    pair the store does not hold fails at the moment a trader clicks, three screens from
+    the code that offered it. One Expiry exists in this dataset, so this has one entry;
+    nothing that produces or consumes it is allowed to assume that."""
 
     strike_min: Finite
     strike_max: Finite

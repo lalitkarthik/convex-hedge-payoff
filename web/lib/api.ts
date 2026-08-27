@@ -82,13 +82,33 @@ async function request<T>(endpoint: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** The day: which minutes exist, what expires, what the picker offers. Asked once. */
-export function getSession(): Promise<SessionResponse> {
-  return request<SessionResponse>("/session");
+/**
+ * One day and one Expiry: which minutes exist, what else exists, what the picker offers.
+ *
+ * Asked on every render rather than once, because since #68 a session is a *pair* and
+ * either dropdown can change it. It is also the only thing the two dropdowns are
+ * populated from — no fixture, no data file, no directory walk — which is the whole
+ * reason this endpoint was widened rather than a list being generated beside it.
+ *
+ * The pair passed in is what the URL held; the pair that comes back is what the store
+ * holds. They differ when a link is stale or hand-edited, and the response wins.
+ */
+export function getSession(date?: string, expiry?: string): Promise<SessionResponse> {
+  return request<SessionResponse>(`/session${query({ date, expiry })}`);
 }
 
-export function getChain(moment: string): Promise<ChainResponse> {
-  return request<ChainResponse>(`/chain?moment=${encodeURIComponent(moment)}`);
+export function getChain(
+  moment: string,
+  date?: string,
+  expiry?: string,
+): Promise<ChainResponse> {
+  return request<ChainResponse>(`/chain${query({ moment, date, expiry })}`);
+}
+
+/** A query string from the parameters that have a value, in the order written. */
+function query(params: Record<string, string | undefined>): string {
+  const given = Object.entries(params).filter(([, value]) => value !== undefined);
+  return given.length ? `?${new URLSearchParams(given as [string, string][])}` : "";
 }
 
 /**

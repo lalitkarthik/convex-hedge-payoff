@@ -10,7 +10,7 @@ import PayoffChart from "./PayoffChart";
 import PayoffTable from "./PayoffTable";
 
 import { istClock } from "@/lib/format";
-import { strategyHref } from "@/lib/strategy-url";
+import { strategyHref, type View } from "@/lib/strategy-url";
 import type { AnalysisResponse, ChainResponse, LegRequest, SessionResponse } from "@/lib/types";
 
 /**
@@ -33,23 +33,29 @@ export default function AnalyseScreen({
   chain,
   analysis,
   legs,
-  moment,
+  view,
 }: {
   session: SessionResponse;
   chain: ChainResponse;
   analysis: AnalysisResponse;
   legs: LegRequest[];
-  moment: string;
+  view: View;
 }) {
   const [tab, setTab] = useState<Tab>("pnl");
 
   return (
     <div className="shell">
       <Header chain={chain}>
-        <a className="back" href={strategyHref("/", moment, legs)}>
+        <a className="back" href={strategyHref("/", view, legs)}>
           ← Chain
         </a>
-        <span className="chip">as of {istClock(moment)} IST</span>
+        {/* Which day and which series, as text rather than as the Chain's two dropdowns:
+            an analysis is of one Strategy at one minute, and changing either underneath
+            it would be changing the question rather than the view. The way to another
+            day is back to the Chain, which is the link immediately to the left. */}
+        <span className="chip">{view.date}</span>
+        <span className="chip">{chain.expiry}</span>
+        <span className="chip">as of {istClock(view.moment)} IST</span>
         <span className="chip">{session.moment_count} minutes in session</span>
       </Header>
 

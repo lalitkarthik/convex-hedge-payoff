@@ -430,8 +430,26 @@
         "type": "object"
       },
       "SessionResponse": {
-        "description": "What a client needs before it can ask for anything else.\n\nEvery other endpoint takes a `moment`, and until this existed there was no way to\nlearn which moments there are. The frontend held the list in a generated fixture\ninstead, which made the set of tradeable minutes a property of a build script rather\nthan of the data - and free to drift from it silently.\n\nBounds and counts as well as the list itself, because a slider needs its ends and a\ntrader reading \"376\" learns something the array does not tell them at a glance.",
+        "description": "What a client needs before it can ask for anything else.\n\nEvery other endpoint takes a `moment`, and until this existed there was no way to\nlearn which moments there are. The frontend held the list in a generated fixture\ninstead, which made the set of tradeable minutes a property of a build script rather\nthan of the data - and free to drift from it silently.\n\nBounds and counts as well as the list itself, because a slider needs its ends and a\ntrader reading \"376\" learns something the array does not tell them at a glance.\n\nA session is **one date and one Expiry** (#68), and it carries the two lists a client\npicks the next one from. That is what makes the dropdowns above the Chain open\nwithout reading a data file, and it is the same argument as the paragraph above: a\nlist of dates written by a build script is a list that can drift from the tree the\nengine will actually serve.\n\n`date` and `expiry` name the pair this response describes, and they are **not\nnecessarily the pair that was asked for**. A request naming a date and an Expiry that\ndate did not trade is resolved to one that exists rather than refused, so a client\nrenders these two fields rather than what it sent.",
         "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "dates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "expiries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Expiries",
+            "type": "array"
+          },
           "expiry": {
             "title": "Expiry",
             "type": "string"
@@ -473,11 +491,14 @@
           }
         },
         "required": [
+          "date",
+          "dates",
           "moments",
           "moment_count",
           "first_moment",
           "last_moment",
           "expiry",
+          "expiries",
           "strike_min",
           "strike_max",
           "presets"
@@ -574,7 +595,7 @@
     },
     "/chain": {
       "get": {
-        "description": "The Chain as-of a moment: one row per strike, call and put either side.\n\n`date` is the trading date, which is what the store is keyed by and what a link will\ncarry once there is a control that picks one (#68). Omitted, it is taken off the\nmoment: the session runs 03:45 to 10:00 UTC, so it never crosses a midnight and the\ntwo cannot disagree. Naming it is what makes the twenty-three days #67 built reachable\nwithout a client having to know that.",
+        "description": "The Chain as-of a moment: one row per strike, call and put either side.\n\n`date` is the trading date, which is what the store is keyed by and what a link\ncarries now that a control picks one (#68). Omitted, it is taken off the moment: the\nsession runs 03:45 to 10:00 UTC, so it never crosses a midnight and the two cannot\ndisagree. Naming it is what makes the twenty-three days #67 built reachable without a\nclient having to know that.\n\n`expiry` is the other partition key, spelled as the response spells it - `10FEB26`.\nOmitted, the Chain covers every series that traded that day, which is what it meant\nbefore there was a second dropdown to name one. Named, it covers exactly one; the day\na second series exists, the difference is a Chain against two interleaved, and\nnothing on screen would say which was being read.\n\n**Strict, unlike `/session`.** A pair the store does not hold is a 404 naming what it\ndoes hold, not a quiet substitution: a Chain that is not the one that was asked for\nis indistinguishable from one that is.",
         "operationId": "read_chain_chain_get",
         "parameters": [
           {
@@ -600,6 +621,22 @@
                 }
               ],
               "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
             }
           }
         ],
@@ -734,8 +771,42 @@
     },
     "/session": {
       "get": {
-        "description": "The day itself: which minutes exist, what expires, and what the picker offers.\n\nAsked once, at boot. Everything else takes a `moment`, and this is the only way to\nlearn which moments there are - so it is served from the data rather than from a\nclock, and a client that renders 376 stops is rendering 376 minutes that quoted.",
+        "description": "One day and one Expiry: which minutes exist, what else exists, what the picker offers.\n\nAsked whenever either dropdown moves. Everything else takes a `moment`, and this is\nthe only way to learn which moments there are - so it is served from the data rather\nthan from a clock, and a client that renders 376 stops is rendering 376 minutes that\nquoted. `dates` and `expiries` are the same argument one level up (#68): the two\ndropdowns are populated from here and never from a file, because a generated list is\nfree to describe a day the engine would not serve.\n\n**The pair is resolved, not merely validated.** A trader changes the date and the\nExpiry in the URL is one interaction behind; `catalog.resolve` returns a pair the\nstore actually holds, and `date` and `expiry` in the response say which - so what\ncomes back is never an empty Chain and never a session describing a day `/chain`\nwould refuse. `/chain` itself is strict, because it is asked for one specific thing.",
         "operationId": "read_session_session_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -746,6 +817,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Read Session"

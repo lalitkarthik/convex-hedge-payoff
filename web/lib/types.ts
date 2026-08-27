@@ -31,14 +31,32 @@ export type OptionType = "CE" | "PE";
 export type Direction = 1 | -1;
 export type ForwardMethod = "parity_fit" | "single_strike_parity" | "spot";
 
-/** The day. Asked once, before anything else can name a moment. */
+/**
+ * One day and one Expiry. Asked whenever either dropdown moves.
+ *
+ * `date` and `expiry` name the pair this response describes, and they are **not
+ * necessarily the pair that was asked for** (#68): a request naming a date and an Expiry
+ * that date did not trade is resolved to a pair the store holds rather than refused. So
+ * a client renders these two fields, not what it sent — which is what keeps changing the
+ * date from producing an empty Chain.
+ */
 export interface SessionResponse {
-  /** Every minute that quoted, ISO 8601, in session order. 376 of them. */
+  /** The trading date this session describes, ISO 8601. */
+  date: string;
+  /** Every trading date in the store, ascending. What the date dropdown lists. */
+  dates: string[];
+  /** Every minute that quoted, ISO 8601, in session order. 376 of them on the anchor. */
   moments: string[];
   moment_count: number;
   first_moment: string;
   last_moment: string;
+  /** The Expiry this session describes, spelled as `ChainResponse.expiry` spells it. */
   expiry: string;
+  /**
+   * Every Expiry that traded on `date`, ascending. What the Expiry dropdown lists — only
+   * the ones that traded *that day*, so a pair the store does not hold is unpickable.
+   */
+  expiries: string[];
   strike_min: number;
   strike_max: number;
   presets: string[];

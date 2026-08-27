@@ -87,6 +87,31 @@ describe("the requests themselves", () => {
     expect(calls[0]).toContain("/chain?moment=2026-01-27T06%3A30%3A00");
   });
 
+  test("a chain names the date and the Expiry when the view has them", async () => {
+    // #68: the two dropdowns are the URL, and the URL is what the request carries. A
+    // date left off would serve whichever day the moment implies - which is the same
+    // day, until it is not, and nothing on screen would say which was being read.
+    const calls = respondWith(200, { moment: "2026-01-07T06:30:00", rows: [] });
+    await getChain("2026-01-07T06:30:00", "2026-01-07", "10FEB26");
+
+    const asked = new URLSearchParams(calls[0].split("?")[1]);
+    expect(asked.get("moment")).toBe("2026-01-07T06:30:00");
+    expect(asked.get("date")).toBe("2026-01-07");
+    expect(asked.get("expiry")).toBe("10FEB26");
+  });
+
+  test("a session asks for a pair and omits what it was not given", async () => {
+    // Omitted rather than sent empty: `/session` reads an absent date as "open on the
+    // anchor", and `?date=` would be a date it has to fail to parse.
+    const calls = respondWith(200, { moments: [] });
+    await getSession();
+    expect(calls[0]).toEndWith("/session");
+
+    await getSession("2026-02-10");
+    expect(calls[1]).toContain("/session?date=2026-02-10");
+    expect(calls[1]).not.toContain("expiry");
+  });
+
   test("an analysis is a POST carrying the moment and the Legs together", async () => {
     // One fat request, one fat response (#23). The client never asks for the curve and
     // the metrics separately - they would arrive at different times and disagree.
