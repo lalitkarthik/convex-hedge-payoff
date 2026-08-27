@@ -139,9 +139,11 @@ describe("the Analyse page", () => {
     // an equally plausible Forward, and the two are 118.87 apart at this minute.
     //
     // The Payoff Table tab is the one the test above left open.
+    // innerText returns text as rendered, and the header is uppercased in CSS, so this
+    // compares case-insensitively: the assertion is about the word, not the styling.
     const heading = await page.locator("table.grid thead").innerText();
-    expect(heading).toContain("Forward at expiry");
-    expect(heading).not.toContain("Spot");
+    expect(heading.toLowerCase()).toContain("forward at expiry");
+    expect(heading.toLowerCase()).not.toContain("spot");
 
     // The chart sits above the tabs and is rendered whichever one is selected.
     const chart = await page.locator("svg.recharts-surface").textContent();
