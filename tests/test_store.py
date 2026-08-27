@@ -15,6 +15,7 @@ S3 half is one download away from here and is exercised by `build_runtime.py --c
 """
 
 import re
+import shutil
 import sys
 from datetime import date
 from pathlib import Path
@@ -23,7 +24,7 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 
-from payoff import chain, store
+from payoff import chain, store, strategy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_runtime  # noqa: E402  - scripts/ is not a package
@@ -162,7 +163,13 @@ def test_the_writer_lays_the_tree_out_in_the_agreed_order(built):
     breakage surfaces later, in whatever reads the tree by a path it spelled itself.
     """
     written = sorted(path.relative_to(built).as_posix() for path in built.rglob("*.parquet"))
-    assert written == [f"{LAYOUT}/part-0.parquet", "manifest_v1/part-0.parquet"]
+    assert written == [
+        f"{LAYOUT}/part-0.parquet",
+        "manifest_v1/part-0.parquet",
+        # #70: no `asset=`, no `date=`, no `expiry=`. `max(F - K, 0)` depends on none of
+        # them, so a partitioned Payoff would be twenty-four identical copies of 588 rows.
+        "payoff_v1/part-0.parquet",
+    ]
 
     # And the one function allowed to spell that path agrees with the literal above.
     partition = store.partition_path(built, asset=ASSET, date=DATE, expiry=EXPIRY)
@@ -279,12 +286,150 @@ def test_the_manifest_says_which_expiries_pair_with_which_dates(built):
     A date's directory lists its expiries, so "what did 27 January offer" is a directory
     listing. "Which dates did the 10 Feb series trade on" is twenty-four of them, and a
     dropdown that has to walk the tree to populate itself is not lazy, it is slow.
+
+    #70 adds the two bounds of the shared Forward domain to the same row. They are the
+    reason the reader can interpolate between corner points it did not write, and they
+    are spelled out here as literals for the same reason the layout is: a reader and a
+    writer that disagree about where the outer corners sit produce a smooth, plausible,
+    wrong line rather than an exception.
     """
     manifest = store.scan(built, store.MANIFEST).collect()
 
     assert manifest.columns == list(build_runtime.MANIFEST_SCHEMA)
-    assert manifest.rows() == [(ASSET, date.fromisoformat(DATE), date.fromisoformat(EXPIRY))]
+    assert manifest.rows() == [
+        (ASSET, date.fromisoformat(DATE), date.fromisoformat(EXPIRY), 0.0, 55_900.0)
+    ]
     assert manifest.schema["date"] == pl.Date, "sortable, not a string"
+
+
+def test_the_payoff_is_one_unpartitioned_artifact_of_three_corners_per_contract(built):
+    """#70. `max(F - K, 0)` depends on the strike and the type and on nothing else.
+
+    Not on the date, not on the minute, not on the Expiry - so a Payoff keyed by any of
+    those would be twenty-four identical copies of the same few hundred rows, free to
+    drift from one another and with nothing that would notice. It is written once, for
+    the whole dataset, and `test_the_writer_lays_the_tree_out_in_the_agreed_order` is
+    where the absence of `asset=`, `date=` and `expiry=` from its path is pinned.
+
+    Three corners per contract, and the anchor's 94 strikes crossed with **both** sides:
+    two of the dataset's strikes quoted one side only, and the Payoff of the side that
+    did not trade is not unknown - it is the same function, and a trader who picks it is
+    asking an ordinary question.
+    """
+    payoff = store.scan(built, store.PAYOFF).collect()
+
+    assert payoff.columns == list(build_runtime.PAYOFF_SCHEMA)
+    assert payoff.height == 94 * 2 * 3, "94 strikes, two sides, three corners"
+    assert not {"asset", "date", "expiry"} & set(payoff.columns), "keyed by none of them"
+
+    per_contract = payoff.group_by("strike", "option_type").len()["len"].unique().to_list()
+    assert per_contract == [3], "a Payoff bends exactly once, so three points describe it"
+
+    assert sorted(payoff["option_type"].unique().to_list()) == ["CE", "PE"]
+    assert payoff["corner"].unique().sort().to_list() == [0, 1, 2]
+
+
+def test_every_corner_sits_on_the_one_domain_the_manifest_publishes(built):
+    """#70's rule, asserted on the file rather than on a chart.
+
+    **Every Leg's corners sit on one shared, absolute Forward domain.** Legs are summed by
+    adding their values at the same Forward, and a domain centred on each Leg's own strike
+    sums points that are not the same point - the failure that once reported a two-Leg
+    delta of -157 where the true figure was +742.
+
+    So: the outer corner of every contract is the *same* Forward as every other's, the
+    middle corner is the strike, and the two ends are what the manifest publishes. Nothing
+    above this line can see the difference; a per-Leg domain serves a chart that is the
+    right shape everywhere except at the corners, and a wrong corner still looks like a
+    corner.
+    """
+    payoff = store.scan(built, store.PAYOFF).sort("strike", "option_type", "corner").collect()
+    manifest = store.scan(built, store.MANIFEST).collect()
+
+    low, high = manifest["forward_min"][0], manifest["forward_max"][0]
+    assert (low, high) == (0.0, 55_900.0), "zero, and twice the highest strike in the dataset"
+
+    ends = payoff.filter(pl.col("corner") != 1)
+    assert ends.filter(pl.col("corner") == 0)["forward"].unique().to_list() == [low]
+    assert ends.filter(pl.col("corner") == 2)["forward"].unique().to_list() == [high]
+
+    middles = payoff.filter(pl.col("corner") == 1)
+    assert middles["forward"].to_list() == middles["strike"].to_list(), "the bend is the strike"
+    assert middles["payoff"].unique().to_list() == [0.0], "and it is worth nothing there"
+
+    # The value at each corner, against the definition rather than against itself.
+    for strike, option_type, corner, forward, value in payoff.rows():
+        expected = forward - strike if option_type == "CE" else strike - forward
+        assert value == pytest.approx(max(expected, 0.0), abs=1e-9), (strike, option_type, corner)
+
+
+def test_the_reader_takes_the_domain_from_the_manifest_and_not_from_a_constant(tmp_path):
+    """#70: "the domain bounds come from the manifest, not from a constant in the reader".
+
+    The one seam below HTTP where this can be checked, and it is here for the same reason
+    the partition order is: a reader carrying its own copy of the bounds agrees with the
+    writer until the day the writer's change, and then it interpolates over a segment that
+    was never stored and draws a smooth, plausible, wrong line. There is no assertion
+    above this line that could see that.
+
+    So the manifest is given bounds no constant would have guessed and the reader is asked
+    what the domain is. A hard-coded 0.0 and twice-the-highest-strike passes every other
+    test in this suite and fails only this one.
+    """
+    invented = (111.0, 222_222.0)
+    root = build_runtime.store.dataset_root(tmp_path, store.MANIFEST)
+    root.mkdir(parents=True)
+    pl.DataFrame(
+        [(ASSET, date.fromisoformat(DATE), date.fromisoformat(EXPIRY), *invented)],
+        schema=build_runtime.MANIFEST_SCHEMA,
+        orient="row",
+    ).write_parquet(root / "part-0.parquet")
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(store, "runtime_root", lambda: tmp_path)
+    strategy.forward_domain.cache_clear()
+    try:
+        assert strategy.forward_domain() == invented
+    finally:
+        monkey.undo()
+        strategy.forward_domain.cache_clear()
+
+
+def test_a_new_strike_extends_the_payoff_without_rebuilding_anything_else(built, tmp_path):
+    """#70: "adding a strike that did not previously exist extends the artifact".
+
+    Widening the set of contracts is one small file rewritten. No day is re-derived, no
+    chain partition is touched, and the manifest still describes the same dates - which is
+    the whole reason the Payoff is not partitioned by date. A Payoff keyed by day would
+    make a new strike a rebuild of every day it could ever be quoted on.
+
+    The tree is copied first so the extension does not leak into the other assertions in
+    this file, which is a property of the fixture rather than of the writer.
+    """
+    root = tmp_path / "runtime"
+    shutil.copytree(built, root)
+
+    chain_part = root / LAYOUT / "part-0.parquet"
+    chain_bytes = chain_part.read_bytes()
+    manifest_bytes = (root / "manifest_v1" / "part-0.parquet").read_bytes()
+    before = store.scan(root, store.PAYOFF).collect()
+
+    new = 25_225.0
+    assert new not in before["strike"].to_list(), "a strike the dataset has never quoted"
+    build_runtime.write_payoff(root, extra=((new, "CE"),))
+
+    after = store.scan(root, store.PAYOFF).collect()
+    assert after.height == before.height + 3, "one contract, three corners, nothing else"
+    assert chain_part.read_bytes() == chain_bytes, "no day was re-derived"
+    assert (root / "manifest_v1" / "part-0.parquet").read_bytes() == manifest_bytes
+
+    added = after.filter(pl.col("strike") == new).sort("corner")
+    assert added["option_type"].to_list() == ["CE"] * 3
+    assert added["forward"].to_list() == [0.0, new, 55_900.0], "on the shared domain"
+    assert added["payoff"].to_list() == [0.0, 0.0, 55_900.0 - new]
+
+    kept = after.filter(pl.col("strike") != new)
+    assert kept.equals(before), "and every corner that was already there is unmoved"
 
 
 def test_the_manifest_is_written_last_and_cannot_outlive_what_it_describes(tmp_path):
