@@ -8,7 +8,7 @@ immutable. So it happens here, once, and the API only reads.
     Data/sample/chain_2026-01-27.parquet          the committed seed
       -> chain.load_chain()                       drops forward, discount, iv
       -> chain.forward_at / solved_volatility     derives them back
-      -> Data/runtime/underlying=.../expiry=.../date=.../part-0.parquet
+      -> Data/runtime/chain_v1/asset=.../date=.../expiry=.../part-0.parquet
 
 **Which direction the Oracle flows matters.** This script reads the committed sample and
 `load_chain()` drops the graded columns before anything here can see them, so what lands
@@ -22,8 +22,9 @@ differences, all deliberate:
   * `volume`, `open_interest` and `spot` are **added**. That file has none of them and
     `ChainQuote` and `ChainResponse` serve all three.
   * `vanna`, `volga` and `charm` are **omitted**. We derive five Greeks, not eight.
-  * `underlying`, `expiry` and `date` live in the **path**, not in the file. That is what
-    Hive partitioning is, and Polars reads them back as columns anyway.
+  * `asset`, `date` and `expiry` live in the **path**, not in the file. That is what Hive
+    partitioning is, and Polars reads them back as columns anyway. `store` spells that
+    path, version and all; nothing here decides its shape.
 
 Usage:  python scripts/build_runtime.py [root]
         python scripts/build_runtime.py --check      reconcile without writing
@@ -38,8 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from payoff import chain, store  # noqa: E402  - after the path is set
 
-UNDERLYING = "NIFTY"
+ASSET = "NIFTY"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "Data" / "runtime"
+"""The runtime root, holding one versioned tree per dataset - not a dataset root itself."""
 
 #: `greeks.parquet`'s own types, so a comparison against it is field for field. The
 #: timestamp is milliseconds and the strings are large - both differ from what Polars
@@ -134,7 +136,7 @@ def main(root: Path | str = DEFAULT_ROOT) -> Path:
     frame = runtime_frame()
     date = str(frame["timestamp_utc"].dt.date().min())
 
-    part = store.partition_path(root, underlying=UNDERLYING, expiry=expiry_date(), date=date)
+    part = store.partition_path(root, asset=ASSET, date=date, expiry=expiry_date())
     part.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(part / "part-0.parquet")
 

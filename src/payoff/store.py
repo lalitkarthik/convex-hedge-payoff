@@ -10,11 +10,19 @@ that the deployment is a static artefact rather than a database to operate"* - w
 qualifications. The artefact lives in S3 rather than in the repository, and it is
 **Hive-partitioned**:
 
-    chain/underlying=NIFTY/expiry=2026-02-10/date=2026-01-27/part-0.parquet
+    chain_v1/asset=NIFTY/date=2026-01-27/expiry=2026-02-10/part-0.parquet
 
 The partition keys are in the **path**, so they cost nothing to store, a filter on one
 skips whole files before a byte of column data is read, and a second trading day or a
 second expiry is a new prefix rather than a migration.
+
+Two details of that path are decisions rather than accidents (#65). **`asset`, and date
+above expiry**: the key names and their order follow the reference system's own derived
+tree, and date sits above expiry because that is the order a trader picks in - a day
+first, then what that day offered. **`_v1`**: the derivation version is part of the
+dataset root, so changing the pricing model writes a new root and rolling back is a
+pointer change rather than a migration. The delta and gamma convention has already
+changed once and invalidated every stored Greek, so that is not hypothetical.
 
 **The Oracle is not here.** `Data/greeks.parquet` and its siblings stay committed as test
 fixtures; `scripts/build_runtime.py` reads them on the way in, and nothing reads them on
@@ -30,6 +38,22 @@ import polars as pl
 
 PART_GLOB = "**/*.parquet"
 
+CHAIN = "chain"
+"""The one dataset that exists today. #64 adds a summary, a payoff and a manifest."""
+
+DERIVATION_VERSION = "v1"
+"""What the stored numbers were derived by, carried in every dataset root's name.
+
+In the name and not in a column, because a column can only be filtered on - it cannot
+let two versions coexist. As a root, re-deriving writes `chain_v2` alongside `chain_v1`,
+serving switches by pointing at the other one, and rolling back points back. A full
+rebuild of the twenty-four days is about thirty-four seconds, so keeping the old root is
+cheap and deleting it is a separate, unhurried decision.
+
+Bump this when the meaning of a stored figure changes - a new pricing model, a changed
+Greek convention - and not when a column is added that nothing yet reads.
+"""
+
 CACHE_ROOT = Path(os.environ.get("PAYOFF_CACHE", Path.home() / ".cache" / "convex-hedge-payoff"))
 """Where partitions fetched from S3 are kept.
 
@@ -42,30 +66,45 @@ but worth knowing - the first request pays the fetch.
 """
 
 
-def scan(root: Path | str) -> pl.LazyFrame:
-    """A lazy view over every partition under `root`.
+def dataset_root(root: Path | str, dataset: str = CHAIN) -> Path:
+    """Where one dataset's tree begins: its name, then the derivation version.
+
+    Split out from `partition_path` only because the unpartitioned datasets #64 adds -
+    the payoff corners, the manifest - need the versioned root without any keys under it.
+    Both still spell the path in this one module.
+    """
+    return Path(root) / f"{dataset}_{DERIVATION_VERSION}"
+
+
+def scan(root: Path | str, dataset: str = CHAIN) -> pl.LazyFrame:
+    """A lazy view over every partition of `dataset` under `root`.
 
     Lazy on purpose, and not merely as an implementation detail: the caller composes a
     filter and a projection onto this frame, and Polars pushes both down into the parquet
     reader, so an as-of query at 12:00 reads neither the afternoon's row groups nor the
     columns it did not ask for.
 
-    `root` is a local path. Fetching from S3 is `local_partition`'s job, so that
-    everything above this line is testable without a bucket, credentials or a network.
+    `root` is the runtime root, holding one versioned tree per dataset, and it is a local
+    path. Fetching from S3 is `fetch`'s job, so that everything above this line is
+    testable without a bucket, credentials or a network.
     """
-    return pl.scan_parquet(f"{Path(root)}/{PART_GLOB}", hive_partitioning=True)
+    return pl.scan_parquet(f"{dataset_root(root, dataset)}/{PART_GLOB}", hive_partitioning=True)
 
 
-def partition_path(root: Path | str, *, underlying: str, expiry: str, date: str) -> Path:
+def partition_path(
+    root: Path | str, *, asset: str, date: str, expiry: str, dataset: str = CHAIN
+) -> Path:
     """Where one day of one expiry lives, in Hive's `key=value` convention.
 
     One function rather than an f-string at each call site, because the reader and the
     writer have to agree on this exactly - a mismatch does not raise, it silently scans
-    nothing.
+    nothing. That is also why the key order is fixed here and not left to the caller's
+    keyword order: a tree written expiry-above-date reads back byte-identical rows, so
+    nothing downstream of this line can notice the mistake. `tests/test_store.py` spells
+    the expected path out literally rather than calling this, which is the only way the
+    agreement is actually checked rather than assumed.
     """
-    return (
-        Path(root) / f"underlying={underlying}" / f"expiry={expiry}" / f"date={date}"
-    )
+    return dataset_root(root, dataset) / f"asset={asset}" / f"date={date}" / f"expiry={expiry}"
 
 
 @lru_cache(maxsize=1)

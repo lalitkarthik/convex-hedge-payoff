@@ -14,6 +14,7 @@ Tested against a tree built in `tmp_path`: no bucket, no credentials, no network
 S3 half is one download away from here and is exercised by `build_runtime.py --check`.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -30,16 +31,27 @@ DATA = Path(__file__).resolve().parents[1] / "Data"
 SAMPLE = DATA / "sample" / "chain_2026-01-27.parquet"
 GREEKS = DATA / "greeks.parquet"
 
-UNDERLYING = "NIFTY"
+ASSET = "NIFTY"
 EXPIRY = "2026-02-10"
 DATE = "2026-01-27"
+
+LAYOUT = f"chain_v1/asset={ASSET}/date={DATE}/expiry={EXPIRY}"
+"""The tree, spelled out by hand rather than by `store.partition_path`.
+
+Written twice on purpose. Every other seam in this project grades what comes back over
+HTTP, and this one cannot: a tree keyed `expiry` above `date`, or keyed `underlying`
+instead of `asset`, holds the same rows in the same order and serves byte-identical
+responses. There is no assertion above this line that could see the difference. So the
+agreement between reader and writer is checked here against a literal, and calling the
+function that produces the path would only assert that it equals itself.
+"""
 
 
 @pytest.fixture(scope="module")
 def tree(tmp_path_factory) -> Path:
     """A one-partition Hive tree, laid out the way `build_runtime.py` lays one out."""
     root = tmp_path_factory.mktemp("runtime")
-    part = root / f"underlying={UNDERLYING}" / f"expiry={EXPIRY}" / f"date={DATE}"
+    part = root / LAYOUT
     part.mkdir(parents=True)
     pl.read_parquet(SAMPLE).select(
         "ts", "strike", "option_type", "last", "dte_days", "spot"
@@ -48,9 +60,9 @@ def tree(tmp_path_factory) -> Path:
 
 
 def test_the_partition_keys_come_back_as_columns(tree):
-    """Hive partitioning puts `underlying`, `expiry` and `date` in the **path**, not in
-    the file - so they cost nothing to store and a filter on one skips whole files
-    before a byte of column data is read.
+    """Hive partitioning puts `asset`, `date` and `expiry` in the **path**, not in the
+    file - so they cost nothing to store and a filter on one skips whole files before a
+    byte of column data is read.
 
     Asserted because it is the entire reason for the layout. If these were absent the
     tree would be an ordinary directory of parquet and every query would read all of it.
@@ -60,14 +72,33 @@ def test_the_partition_keys_come_back_as_columns(tree):
     assert isinstance(scanned, pl.LazyFrame), "lazy: nothing is read until it is collected"
 
     schema = scanned.collect_schema()
-    for key in ("underlying", "expiry", "date"):
+    for key in ("asset", "date", "expiry"):
         assert key in schema.names()
 
     # Polars types the values it parses off the path. `expiry` arriving as a Date rather
     # than the string in the directory name is what `chain.expiry_label()` has to format.
-    assert schema["underlying"] == pl.String
-    assert schema["expiry"] == pl.Date
+    assert schema["asset"] == pl.String
     assert schema["date"] == pl.Date
+    assert schema["expiry"] == pl.Date
+
+
+def test_a_new_derivation_version_is_a_new_root_rather_than_a_migration(tree, monkeypatch):
+    """#65: the derivation version is part of the dataset root's name.
+
+    Which is only worth something if it actually selects. The delta and gamma convention
+    changed once already and invalidated every stored Greek; the point of the version is
+    that re-deriving under `v2` leaves `v1` in place, so rolling back is a pointer change
+    rather than a migration. So: bump it, and the tree that was written under the old one
+    must become invisible rather than be read as if it were current.
+    """
+    assert store.dataset_root(tree).name == f"{store.CHAIN}_{store.DERIVATION_VERSION}"
+    assert re.fullmatch(r"v\d+", store.DERIVATION_VERSION), "a version, not a label"
+    assert store.scan(tree).collect().height, "readable under the version it was written by"
+
+    monkeypatch.setattr(store, "DERIVATION_VERSION", "v99")
+    assert not store.dataset_root(tree).exists()
+    with pytest.raises(Exception, match="(?i)expanded paths were empty"):
+        store.scan(tree).collect()
 
 
 @pytest.fixture(scope="module")
@@ -102,22 +133,37 @@ def test_the_written_file_carries_the_oracle_files_own_column_types(built):
 
     assert {"volume", "open_interest", "spot"} <= set(ours), "what the chain table serves"
     assert not {"vanna", "volga", "charm"} & set(ours), "not derived, so not stored"
-    assert not {"underlying", "expiry", "date"} & set(ours), "these live in the path"
+    assert not {"asset", "expiry", "date"} & set(ours), "these live in the path"
+
+
+def test_the_writer_lays_the_tree_out_in_the_agreed_order(built):
+    """#65's whole point, and the one claim no HTTP test can make.
+
+    Not "a parquet file exists somewhere underneath": the exact relative path, every
+    directory name and their order, against a literal. Swap `date` and `expiry`, or go
+    back to `underlying`, and every assertion in this file except this one still passes -
+    the rows are identical, the schema is identical, the served bytes are identical. The
+    breakage surfaces later, in whatever reads the tree by a path it spelled itself.
+    """
+    written = sorted(path.relative_to(built).as_posix() for path in built.rglob("*.parquet"))
+    assert written == [f"{LAYOUT}/part-0.parquet"]
+
+    # And the one function allowed to spell that path agrees with the literal above.
+    part = store.partition_path(built, asset=ASSET, date=DATE, expiry=EXPIRY)
+    assert part == built / LAYOUT
+    assert part.is_dir(), "the Hive layout the reader expects"
 
 
 def test_the_partition_holds_the_whole_day(built):
-    """One file per (underlying, expiry, date), and the day is 23,581 rows.
+    """One file per (asset, date, expiry), and the day is 23,581 rows.
 
     The count is the sample's own, asserted in `test_data_contract.py`. If the writer
     ever drops rows - a join that half-matches, a filter that fires - this is what says
     so, and it says it before anything downstream renders a chain with holes in it.
     """
-    part = store.partition_path(built, underlying=UNDERLYING, expiry=EXPIRY, date=DATE)
-    assert part.is_dir(), "the Hive layout the reader expects"
-
     frame = store.scan(built).collect()
     assert frame.height == 23_581
-    assert frame["underlying"].unique().to_list() == [UNDERLYING]
+    assert frame["asset"].unique().to_list() == [ASSET]
 
 
 def test_the_stored_day_is_what_the_engine_derives_right_now(built):
