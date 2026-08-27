@@ -1,6 +1,6 @@
 import AnalyseScreen from "@/components/AnalyseScreen";
 import LinkProblem from "@/components/LinkProblem";
-import { getChain, getSession, postAnalysis } from "@/lib/api";
+import { getSession, getSummary, postAnalysis } from "@/lib/api";
 import { LegsUrlError } from "@/lib/legs-url";
 import { decodeLegs, one, pickView } from "@/lib/strategy-url";
 
@@ -18,8 +18,10 @@ import { decodeLegs, one, pickView } from "@/lib/strategy-url";
  * file that used to — `lib/skeleton-maths.ts`, a second implementation of
  * `strategy.py` — was deleted when this was wired, which is what it was quarantined for.
  *
- * The chain is fetched alongside because the header shows spot, the forward and the
- * basis, and because a Leg is labelled by its strike's implied volatility.
+ * The **summary** is fetched alongside, and it used to be the whole Chain: the header
+ * shows Spot, the Forward, the Discount Factor and the at-the-money volatility, and this
+ * page was pulling 91 strikes across the wire to render four numbers. Since #69 those
+ * four are a row of their own, so nothing on this screen reads the Chain artifact.
  */
 
 export const dynamic = "force-dynamic";
@@ -44,18 +46,18 @@ export default async function AnalysePage({
     return <LinkProblem message={error.message} view={view} />;
   }
 
-  // Two requests, not one, and deliberately: the analysis is the Strategy's, the chain
-  // is the market's. Bundling them would put a 91-strike table inside every response to
-  // a question about four Legs.
-  const [chain, analysis] = await Promise.all([
-    getChain(view.moment, view.date, view.expiry),
+  // Two requests, not one, and deliberately: the analysis is the Strategy's, the summary
+  // is the market's. Bundling them would put the market inside every response to a
+  // question about four Legs.
+  const [summary, analysis] = await Promise.all([
+    getSummary(view.moment, view.date, view.expiry),
     postAnalysis({ moment: view.moment, legs }),
   ]);
 
   return (
     <AnalyseScreen
       session={session}
-      chain={chain}
+      summary={summary}
       analysis={analysis}
       legs={legs}
       view={view}

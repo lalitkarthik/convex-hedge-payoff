@@ -10,6 +10,7 @@ the day is immutable. So it happens here, once, and the API only reads.
       -> derive.fits / solved_volatility        forward, discount, volatility
       -> carry_forward()                        every minute for every strike
       -> Data/runtime/chain_v1/asset=.../date=.../expiry=.../part-0.parquet
+      -> Data/runtime/summary_v1/asset=.../date=.../expiry=.../part-0.parquet
       -> Data/runtime/payoff_v1/part-0.parquet            corner points, unpartitioned
       -> Data/runtime/manifest_v1/part-0.parquet          written last, from the tree
 
@@ -38,6 +39,14 @@ to skip: the laziness would be decoration.
 `max(F - K, 0)` depends on the strike and the type and on nothing else, so partitioning
 it by date would write twenty-four identical copies of the same 588 rows.
 
+**The Summary is a projection of the Chain frame, not a second derivation (#69).** Spot,
+the Forward, the Discount Factor and the at-the-money volatility belong to the minute and
+repeat across all ~196 of that minute's Chain rows; the header reads them 375 times as a
+trader drags the time control, and each of those opened the million-row artifact. Stored
+once per minute they are 8,735 rows for the whole dataset. It is reduced from the frame on
+its way to disk, in `write_day`, so the two files describe the same minutes by
+construction - the one arrangement in which the header and the table cannot disagree.
+
 Usage:  python scripts/build_runtime.py [root]
         python scripts/build_runtime.py [root] --dates=2026-01-27,2026-02-10
         python scripts/build_runtime.py [root] --check     reconcile without writing
@@ -51,7 +60,12 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from payoff import derive, seed, store, strategy  # noqa: E402  - after the path is set
+# `chain` is the reader, and it is imported here on purpose (#69). The Summary is a
+# projection of the Chain frame, and every rule that produces one of its fields - what
+# "strict" means, which strike is the money, which of a strike's two volatilities is its
+# volatility - is a rule the reader applies as well. Restating any of them here would be a
+# second definition of a number that must be identical in both artifacts.
+from payoff import chain, derive, seed, store, strategy  # noqa: E402  - after the path
 
 ASSET = "NIFTY"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "Data" / "runtime"
@@ -104,6 +118,34 @@ moment being asked about and at the strike's one shared volatility, which a per-
 stored Greek could not be - it would have to pick one side's volatility, and the two
 disagree by up to 0.0275 when the sides are minutes apart. A stored column that
 disagreed with the served one would be worse than an absent column.
+"""
+
+SUMMARY_SCHEMA = {
+    "timestamp_utc": pl.Datetime("ms"),
+    "spot": pl.Float64,
+    "forward": pl.Float64,
+    "discount": pl.Float64,
+    "forward_method": pl.String,
+    "dte_days": pl.Float64,
+    "pairs": pl.Int64,
+    "atm_strike": pl.Float64,
+    "atm_iv": pl.Float64,
+}
+"""The Summary: one row per minute, holding what belongs to the minute (#69).
+
+Spot, the Forward, the Discount Factor and the at-the-money volatility are the header's
+four figures, and every one of them is a fact about the minute rather than about a
+strike - which is why in the Chain they repeat across all ~196 rows of that minute. 375
+rows a day here, 8,735 across the dataset, against 1,062,024 in the Chain.
+
+`dte_days` rides along because a `ForwardFit` carries `T` and the header's consumer prices
+against it; `pairs` because a fit that says `parity_fit` is only as good as the number of
+both-sided strikes it ran over, and recovering that from the Chain would mean opening the
+Chain. `atm_strike` because a volatility without the strike it belongs to is a number
+nobody can check.
+
+**Nullable only in `atm_iv`**, and for the same reason `SCHEMA["iv"]` is: a print that no
+volatility reproduces has none, and on the last minute of Expiry day no print has one.
 """
 
 MANIFEST_SCHEMA = {
@@ -256,24 +298,107 @@ def runtime_frame(day: date = derive.ANCHOR, expiry: date | None = None) -> pl.D
     ).sort("timestamp_utc", "strike", "option_type")
 
 
-def write_day(root: Path | str, day: date, expiry: date) -> Path:
-    """Write one (asset, date, expiry) partition. Returns its directory.
+def summary_frame(filled: pl.DataFrame) -> pl.DataFrame:
+    """One row per minute, out of the filled Chain frame that is about to be stored (#69).
+
+    **Reduced from the Chain, never solved again.** That is the whole safety argument for
+    splitting the header off: two artifacts describing one minute that can disagree are
+    worse than one artifact, and the only arrangement in which they cannot is if the
+    second is a projection of the first. Nothing here fits, prices or re-reads anything -
+    it selects, counts and picks.
+
+    The three rules it applies are `chain.py`'s, imported rather than restated:
+
+    * **`chain.STRICT`** selects the rows actually stamped at their minute. `pairs` and
+      the at-the-money strike are properties of what the parity regression saw, and the
+      filled view would count a strike whose last print was two hours ago.
+    * **`chain.at_the_money_strike`** picks the money: nearest *quoted* strike to the
+      **Forward**, among the both-sided ones, widening to all of them on a minute where
+      nothing quotes both.
+    * **`chain.strike_volatility`** gives that strike its one volatility - the freshest of
+      its two sides that has one - which is precisely the number `ChainRow.iv` publishes
+      for it. Grouped by minute *and* strike here, because a whole day is in hand rather
+      than the one minute the reader holds.
+
+    A python loop over the day's ~376 minutes rather than a window function, because the
+    "both-sided, else every quoted strike" fallback and the tie-break to the lower strike
+    are the reader's exact semantics and they are spelled once, in `chain.py`. The build
+    already costs 1.4 s a day; this adds milliseconds.
+    """
+    strict = filled.filter(chain.STRICT)
+    volatility = {
+        (stamp, strike): value
+        for stamp, strike, value in filled.select(
+            "timestamp_utc",
+            "strike",
+            chain.strike_volatility("timestamp_utc", "strike").alias("strike_iv"),
+        )
+        .unique(subset=["timestamp_utc", "strike"])
+        .rows()
+    }
+
+    rows = []
+    for minute in strict.sort("timestamp_utc").partition_by("timestamp_utc", maintain_order=True):
+        stamp = minute["timestamp_utc"][0]
+        forward = float(minute["forward"][0])
+        money = chain.at_the_money_strike(minute, forward)
+        rows.append(
+            (
+                stamp,
+                float(minute["spot"][0]),
+                forward,
+                float(minute["discount"][0]),
+                str(minute["forward_method"][0]),
+                float(minute["dte_days"][0]),
+                int(chain.paired_strikes(minute).size),
+                money,
+                volatility[(stamp, money)],
+            )
+        )
+
+    return pl.DataFrame(rows, schema=SUMMARY_SCHEMA, orient="row").sort("timestamp_utc")
+
+
+def _partition(
+    root: Path | str, dataset: str, day: date, expiry: date, frame: pl.DataFrame, **options
+) -> Path:
+    """Write one (asset, date, expiry) partition of `dataset`. Returns its directory.
 
     Any other parquet already in the partition is removed first. A rebuild that renamed
     its output would otherwise leave the old file beside the new one and the scan would
     read both - a duplicate day that no assertion about the writer would ever see.
-    """
-    frame = runtime_frame(day, expiry)
 
-    part = store.partition_path(root, asset=ASSET, date=str(day), expiry=str(expiry))
+    One function for both partitioned datasets, because the Summary is **partitioned
+    identically to the Chain** (#69) and that is a claim rather than a convenience: the
+    same filter has to select the same minute in both, and two writers spelling the path
+    twice is how that stops being true without anything raising.
+    """
+    part = store.partition_path(
+        root, asset=ASSET, date=str(day), expiry=str(expiry), dataset=dataset
+    )
     part.mkdir(parents=True, exist_ok=True)
     target = part / "part-0.parquet"
     for stale in part.glob("*.parquet"):
         if stale != target:
             stale.unlink()
 
-    frame.write_parquet(target, row_group_size=ROW_GROUP_ROWS)
+    frame.write_parquet(target, **options)
     return part
+
+
+def write_day(root: Path | str, day: date, expiry: date) -> tuple[Path, Path]:
+    """Write one day's Chain **and** its Summary. Returns the two directories.
+
+    Together and from one derivation, rather than in two passes: the Summary is a
+    projection of the frame on the line above it, so the day is derived once and the two
+    files cannot describe different minutes. A second pass would re-derive 1.4 s of
+    forwards and volatilities for the privilege of being able to disagree with the first.
+    """
+    frame = runtime_frame(day, expiry)
+    return (
+        _partition(root, store.CHAIN, day, expiry, frame, row_group_size=ROW_GROUP_ROWS),
+        _partition(root, store.SUMMARY, day, expiry, summary_frame(frame)),
+    )
 
 
 def _unpartitioned(root: Path | str, dataset: str, frame: pl.DataFrame) -> Path:
@@ -389,13 +514,23 @@ def write_manifest(root: Path | str) -> Path:
     The Forward domain rides along for the same reason and with the same timing: the
     reader interpolates between corners it did not write, so the bounds it interpolates
     over have to be the bounds they were written on (#70).
+
+    **A pair is listed only where *every* partitioned artifact holds it (#69).** There are
+    two of them now, and serving a date needs both - the table comes off the Chain and the
+    header off the Summary. `write_day` writes the pair together, so a coherent build makes
+    the intersection and the union the same set; they part company across builds, when a
+    tree carries days derived by code that predates the second artifact. Listing the union
+    would advertise a date whose header cannot be rendered, and the symptom lands on the
+    trader who clicks it.
     """
     low, high = forward_domain(root)
+    keys = ["asset", "date", "expiry"]
+    served = store.scan(root, store.CHAIN).select(keys).unique()
+    for dataset in (store.SUMMARY,):
+        served = served.join(store.scan(root, dataset).select(keys).unique(), on=keys, how="inner")
+
     pairs = (
-        store.scan(root)
-        .select("asset", "date", "expiry")
-        .unique()
-        .sort("asset", "date", "expiry")
+        served.sort(keys)
         .with_columns(forward_min=pl.lit(low), forward_max=pl.lit(high))
         .collect()
         .select([pl.col(name).cast(dtype) for name, dtype in MANIFEST_SCHEMA.items()])
@@ -410,27 +545,42 @@ def check(root: Path | str = DEFAULT_ROOT, dates: tuple[date, ...] | None = None
     The store exists so the API never derives, which means nothing in production ever
     re-checks these numbers. A tree written by last month's code serves answers no test
     has seen, confidently and silently. This is what CI runs to catch that.
+
+    **Both artifacts, not just the Chain (#69).** The Summary is derived from the Chain
+    frame at write time, so a *freshly built* pair cannot disagree - but a stored Summary
+    can still be older than the Chain beside it, written before a rule changed, and the
+    header would then contradict the table underneath it. That is the failure the split
+    creates and this is where it is caught.
     """
     failures = 0
     for day in dates or seed.trading_dates():
         for expiry in seed.expiries_on(day):
             fresh = runtime_frame(day, expiry)
-            stored = (
-                store.scan(root)
-                .filter(pl.col("date") == day, pl.col("expiry") == expiry)
-                .select(fresh.columns)
-                .sort("timestamp_utc", "strike", "option_type")
-                .collect()
-            )
-            if stored.equals(fresh):
-                print(f"{day}  {stored.height:,} rows agree with the engine")
-                continue
+            for dataset, derived, order in (
+                (store.CHAIN, fresh, ("timestamp_utc", "strike", "option_type")),
+                (store.SUMMARY, summary_frame(fresh), ("timestamp_utc",)),
+            ):
+                stored = (
+                    store.scan(root, dataset)
+                    .filter(pl.col("date") == day, pl.col("expiry") == expiry)
+                    .select(derived.columns)
+                    .sort(*order)
+                    .collect()
+                )
+                if stored.equals(derived):
+                    print(f"{day}  {dataset:<7} {stored.height:>7,} rows agree with the engine")
+                    continue
 
-            failures += 1
-            print(f"{day}  MISMATCH: stored {stored.height:,} against {fresh.height:,} derived")
-            for column in fresh.columns:
-                if stored.height == fresh.height and not stored[column].equals(fresh[column]):
-                    print(f"    {column} differs")
+                failures += 1
+                print(
+                    f"{day}  {dataset} MISMATCH: stored {stored.height:,} "
+                    f"against {derived.height:,} derived"
+                )
+                for column in derived.columns:
+                    if stored.height == derived.height and not stored[column].equals(
+                        derived[column]
+                    ):
+                        print(f"    {column} differs")
     return 1 if failures else 0
 
 
@@ -445,13 +595,18 @@ def main(root: Path | str = DEFAULT_ROOT, dates: tuple[date, ...] | None = None)
     Payoff artifact to publish the domain its corners were written on - which is also why
     the manifest stays last and unconditional.
     """
-    written = 0
+    written = minutes = 0
     for day in dates or seed.trading_dates():
         for expiry in seed.expiries_on(day):
-            part = write_day(root, day, expiry)
+            part, summary = write_day(root, day, expiry)
             rows = pl.scan_parquet(part / "part-0.parquet").select(pl.len()).collect().item()
+            stops = pl.scan_parquet(summary / "part-0.parquet").select(pl.len()).collect().item()
             written += rows
-            print(f"{day}  {rows:>7,} filled rows -> {part.relative_to(root)}")
+            minutes += stops
+            print(
+                f"{day}  {rows:>7,} filled rows -> {part.relative_to(root)}"
+                f"  ({stops:>3,} minutes -> {store.SUMMARY}_{store.DERIVATION_VERSION})"
+            )
 
     payoff = write_payoff(root)
     corners = pl.scan_parquet(payoff).select(pl.len()).collect().item()
@@ -459,7 +614,8 @@ def main(root: Path | str = DEFAULT_ROOT, dates: tuple[date, ...] | None = None)
 
     manifest = write_manifest(root)
     low, high = forward_domain(root)
-    print(f"{written:,} rows written; forward domain {low:,.0f} to {high:,.0f}")
+    print(f"{written:,} rows written, {minutes:,} of them minutes in the summary")
+    print(f"forward domain {low:,.0f} to {high:,.0f}")
     print(f"manifest -> {manifest.relative_to(root)}")
     return Path(root)
 

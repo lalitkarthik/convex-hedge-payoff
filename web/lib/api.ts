@@ -30,6 +30,7 @@ import type {
   LegRequest,
   PresetResponse,
   SessionResponse,
+  SummaryResponse,
 } from "./types";
 
 /** The dev default. Named here rather than inline so the failure message can point at it. */
@@ -103,6 +104,25 @@ export function getChain(
   expiry?: string,
 ): Promise<ChainResponse> {
   return request<ChainResponse>(`/chain${query({ moment, date, expiry })}`);
+}
+
+/**
+ * The header at one minute: Spot, the Forward, the Discount Factor, the money (#69).
+ *
+ * **This is what moving the time control asks for.** The four figures belong to the
+ * minute rather than to the strike, and on the server they now come out of a 375-row-a-day
+ * artifact instead of the million-row Chain — so the header updates without anything
+ * touching the Chain at all.
+ *
+ * On `/analyse` it replaces the `getChain` this page used to make: the whole Chain was
+ * being fetched, 91 strikes of it, so that a header could show four numbers.
+ */
+export function getSummary(
+  moment: string,
+  date?: string,
+  expiry?: string,
+): Promise<SummaryResponse> {
+  return request<SummaryResponse>(`/summary${query({ moment, date, expiry })}`);
 }
 
 /** A query string from the parameters that have a value, in the order written. */

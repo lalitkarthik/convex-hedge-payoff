@@ -1,6 +1,6 @@
 import ChainScreen from "@/components/ChainScreen";
 import LinkProblem from "@/components/LinkProblem";
-import { getChain, getSession } from "@/lib/api";
+import { getChain, getSession, getSummary } from "@/lib/api";
 import { LegsUrlError } from "@/lib/legs-url";
 import { decodeLegs, one, pickView } from "@/lib/strategy-url";
 
@@ -47,7 +47,16 @@ export default async function ChainPage({
     return <LinkProblem message={error.message} view={view} />;
   }
 
-  const chain = await getChain(view.moment, view.date, view.expiry);
+  // Two requests, and they answer different questions. The header's four figures belong
+  // to the *minute* and come out of the 375-row-a-day summary (#69); the table is the
+  // minute's ~196 strike rows and is the only thing here that opens the Chain. Moving the
+  // time control used to make the header wait on the second of these.
+  const [summary, chain] = await Promise.all([
+    getSummary(view.moment, view.date, view.expiry),
+    getChain(view.moment, view.date, view.expiry),
+  ]);
 
-  return <ChainScreen session={session} chain={chain} view={view} legs={legs} />;
+  return (
+    <ChainScreen session={session} summary={summary} chain={chain} view={view} legs={legs} />
+  );
 }

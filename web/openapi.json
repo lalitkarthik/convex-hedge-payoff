@@ -506,6 +506,71 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "SummaryResponse": {
+        "description": "The header, at one minute - and nothing about any strike (#69).\n\nSpot, the Forward, the Discount Factor and the at-the-money volatility are facts about\nthe **minute**. In the stored Chain they repeat across every strike of that minute, so\na header that read them there opened the largest artifact in the tree to take four\nnumbers out of about 196 identical copies of each. They are stored once instead, one\nrow a minute, and this is that row on the wire.\n\nDragging the time control moves the header 375 times across a session. Every one of\nthose was a read of the Chain and is now a lookup.\n\n**Every figure here is the one `/chain` publishes for the same minute.** That is not a\ncoincidence to be checked occasionally, it is the reason the split is safe: the build\nreduces the Chain frame it is about to write, so there is no second derivation that\ncould drift. Two artifacts describing one minute that can disagree would be worse than\none artifact.",
+        "properties": {
+          "atm_iv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atm Iv"
+          },
+          "atm_strike": {
+            "title": "Atm Strike",
+            "type": "number"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "discount": {
+            "title": "Discount",
+            "type": "number"
+          },
+          "expiry": {
+            "title": "Expiry",
+            "type": "string"
+          },
+          "forward": {
+            "title": "Forward",
+            "type": "number"
+          },
+          "forward_method": {
+            "enum": [
+              "parity_fit",
+              "single_strike_parity",
+              "spot"
+            ],
+            "title": "Forward Method",
+            "type": "string"
+          },
+          "moment": {
+            "title": "Moment",
+            "type": "string"
+          },
+          "spot": {
+            "title": "Spot",
+            "type": "number"
+          }
+        },
+        "required": [
+          "moment",
+          "date",
+          "expiry",
+          "spot",
+          "forward",
+          "discount",
+          "forward_method",
+          "atm_strike"
+        ],
+        "title": "SummaryResponse",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -830,6 +895,78 @@
           }
         },
         "summary": "Read Session"
+      }
+    },
+    "/summary": {
+      "get": {
+        "description": "The header at one minute: Spot, the Forward, the Discount Factor, the money (#69).\n\n**This is what moving the time control asks for.** The four figures belong to the\nminute rather than to a strike, and in the stored Chain they repeat across every one\nof that minute's ~196 rows; a drag across a session asked for them 375 times and\nopened the million-row artifact 375 times to do it. They live in a 375-row-a-day\nSummary now, and this reads one row of it. Nothing under this endpoint opens the Chain.\n\nSame keys and same rules as `/chain`: `date` off the moment when it is omitted,\n`expiry` spelled `10FEB26`, and **strict** - a pair the store does not hold is a 404\nnaming what it does, never a quiet substitution.\n\nThe numbers are the ones `/chain` publishes for the same minute, and by construction\nrather than by coincidence: the build reduces the Chain frame it is about to write.",
+        "operationId": "read_summary_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "moment",
+            "required": true,
+            "schema": {
+              "title": "Moment",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiry",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiry"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Summary"
       }
     }
   }

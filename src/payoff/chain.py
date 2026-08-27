@@ -18,6 +18,19 @@ as-of view is a slice of one minute rather than a group-by over everything up to
 work it replaced ran on every request and 376 times over while a trader dragged the time
 control.
 
+**And the header no longer opens the Chain at all (#69).** Spot, the Forward, the Discount
+Factor and the at-the-money volatility belong to the *minute*, not to the strike, and in
+the stored Chain they repeat across every one of that minute's ~196 rows. They are stored
+once in a Summary artifact of 375 rows a day, and `summary_scan` is what reads it. So is
+`moments()`: one row per minute is one stop per minute, which is exactly the time
+control's list. Dragging the time control across a session moves the header 375 times, and
+not one of those touches the million-row artifact any more.
+
+The two artifacts describe the same minutes and **cannot be allowed to disagree** about
+them, which is why the Summary is reduced from the Chain frame in the build rather than
+solved a second time, and why the rules that produce its fields - `STRICT`,
+`strike_volatility`, `at_the_money_strike` - live here, in the module that reads them back.
+
 Delta is the exception, and deliberately so: it is **computed on every request** (#53),
 because it is a property of the model at the moment being asked about rather than a fact
 about a print. It costs one vectorised Black-76 call over the ninety-odd strikes in view.
@@ -46,7 +59,14 @@ import polars as pl
 
 from payoff import catalog, store
 from payoff import forward as forward_maths
-from payoff.models import ChainQuote, ChainResponse, ChainRow, Leg, LegRequest
+from payoff.models import (
+    ChainQuote,
+    ChainResponse,
+    ChainRow,
+    Leg,
+    LegRequest,
+    SummaryResponse,
+)
 from payoff.pricing import TRADING_DAYS_PER_YEAR, black76_greeks
 
 ANCHOR_DATE = date(2026, 1, 27)
@@ -116,15 +136,16 @@ def _on(moment: str | datetime, day: str | date | None = None) -> date:
     return day if isinstance(day, date) else date.fromisoformat(str(day))
 
 
-@lru_cache(maxsize=32)
-def chain_scan(day: date = ANCHOR_DATE, expiry: date | None = None) -> pl.LazyFrame:
-    """The lazy plan every read below is composed onto, filtered to one date and Expiry.
+def _keyed_scan(dataset: str, day: date, expiry: date | None) -> pl.LazyFrame:
+    """One dataset's tree, filtered to one date and, optionally, one Expiry.
 
-    Cached because building the plan globs the tree, not because it holds rows - it holds
-    none. Collecting it twice reads the parquet twice, which is the point: the filter
-    goes to the reader rather than to a frame already in memory, and both keys reach it
-    as **partition predicates**, so the other twenty-three days are skipped before a byte
-    of column data is read.
+    Shared by `chain_scan` and `summary_scan` rather than written twice, and that is the
+    point rather than a tidiness: the Chain and the Summary are **partitioned
+    identically** (#69), so a date that selects one has to select the other. Two spellings
+    of this filter is how the two artifacts start describing different minutes.
+
+    Both keys reach the reader as **partition predicates**, so the other twenty-three days
+    are skipped before a byte of column data is read.
 
     `expiry` is optional and **not** because one Expiry exists (#68). Omitted, the plan
     covers every series that traded that day, which is what a caller who has not been
@@ -138,17 +159,47 @@ def chain_scan(day: date = ANCHOR_DATE, expiry: date | None = None) -> pl.LazyFr
     that was not quoted. That is a true sentence about the wrong subject.
     """
     root = store.runtime_root()
-    dataset = store.dataset_root(root)
-    if not dataset.exists():
+    folder = store.dataset_root(root, dataset)
+    if not folder.exists():
         raise MissingRuntimeTree(
-            f"No derived chain at {dataset}. Run `python scripts/build_runtime.py` to "
+            f"No derived {dataset} at {folder}. Run `python scripts/build_runtime.py` to "
             "derive it from the raw data, or point PAYOFF_RUNTIME at a tree that has "
             "already been built."
         )
     catalog.require(day, expiry)
 
-    plan = store.scan(root).filter(pl.col("date") == day)
+    plan = store.scan(root, dataset).filter(pl.col("date") == day)
     return plan if expiry is None else plan.filter(pl.col("expiry") == expiry)
+
+
+@lru_cache(maxsize=32)
+def chain_scan(day: date = ANCHOR_DATE, expiry: date | None = None) -> pl.LazyFrame:
+    """The lazy plan every **strike-level** read below is composed onto.
+
+    Cached because building the plan globs the tree, not because it holds rows - it holds
+    none. Collecting it twice reads the parquet twice, which is the point: the filter
+    goes to the reader rather than to a frame already in memory.
+
+    Only what is genuinely per-strike comes through here now (#69). Spot, the Forward, the
+    Discount Factor, the at-the-money strike and its volatility are facts about the minute,
+    and reading one of them off this plan meant opening the artifact that holds 196 copies
+    of it. They come off `summary_scan` instead.
+    """
+    return _keyed_scan(store.CHAIN, day, expiry)
+
+
+@lru_cache(maxsize=32)
+def summary_scan(day: date = ANCHOR_DATE, expiry: date | None = None) -> pl.LazyFrame:
+    """The per-minute plan: **one row a minute**, and never a strike (#69).
+
+    375 rows a day against the Chain's 50,287, holding exactly the figures that belong to
+    the minute. Everything the header shows and every stop the time control offers is a
+    lookup here, and none of them opens the Chain.
+
+    The same `_keyed_scan` and therefore the same partition predicates as the Chain, which
+    is what makes "the same minute" mean the same thing in both.
+    """
+    return _keyed_scan(store.SUMMARY, day, expiry)
 
 
 @lru_cache(maxsize=512)
@@ -175,24 +226,84 @@ def minute_slice(
     return rows
 
 
-def strict_slice(
+@lru_cache(maxsize=512)
+def minute_summary(
+    day: date, moment: str | datetime, expiry: date | None = None
+) -> dict:
+    """The one Summary row for the latest stored minute at or before `moment` (#69).
+
+    The whole of the header, in one row of a 375-row artifact. Sliced exactly the way
+    `minute_slice` slices the Chain - latest stamp at or before the moment - so the two
+    artifacts cannot land on different minutes for one request.
+
+    Cached per minute, for the same reason and with the same guarantee: the store is
+    immutable for the life of the process.
+    """
+    rows = (
+        summary_scan(day, expiry)
+        .filter(pl.col("timestamp_utc") <= _at(moment))
+        .filter(pl.col("timestamp_utc") == pl.col("timestamp_utc").max())
+        .collect()
+    )
+    if rows.is_empty():
+        raise StrikeNotQuoted(0.0, "--")
+    return rows.row(0, named=True)
+
+
+def _summary(
     moment: str | datetime,
     day: str | date | None = None,
     expiry: str | date | None = None,
-) -> pl.DataFrame:
-    """Every quote **actually stamped** at that minute, rather than carried into it.
+) -> dict:
+    """`minute_summary`, addressed the way the wire addresses everything else."""
+    return minute_summary(_on(moment, day), moment, catalog.as_expiry(expiry))
 
-    The counterpart to `snapshot()`, and not a substitute for it. A chain is served
-    as-of because a strict reading of it is too thin to trade from; the Forward, the
-    Discount Factor and the at-the-money strike are read strictly, because they are
-    facts about a minute rather than about a strike's last print.
 
-    `quoted_at == timestamp_utc` is what strict means now the fill is stored: it selects
-    exactly the rows that existed before the carry-forward, which is why every figure
-    derived from this view is unchanged by #67.
+STRICT = pl.col("quoted_at") == pl.col("timestamp_utc")
+"""The rows **actually stamped** at their minute, rather than carried into it.
+
+The counterpart to the as-of view, and not a substitute for it. A chain is served as-of
+because a strict reading of it is too thin to trade from; the Forward, the Discount
+Factor and the at-the-money strike are derived strictly, because they are facts about a
+minute rather than about a strike's last print - a stale bar in the parity regression
+lands in the Discount Factor directly.
+
+`quoted_at == timestamp_utc` is what strict means now the fill is stored (#67): it
+selects exactly the rows that existed before the carry-forward. Spelled here, once, and
+exported because `scripts/build_runtime.py` reduces the Chain to the Summary through it
+(#69) - a second spelling in the writer is how the Summary starts describing a minute
+that the Chain does not.
+"""
+
+
+def strike_volatility(*over: str) -> pl.Expr:
+    """One implied volatility per strike, from its **freshest** quote (#28).
+
+    A property of the strike and not of the side: served as-of, a call and its put can be
+    minutes apart and imply volatilities up to 0.0275 apart, and publishing both would
+    contradict the model that produced them.
+
+    Freshest of the two **that has one**. A row whose price no volatility reproduces
+    carries null, and a null is not a fresher answer than the other side's number - it is
+    the absence of one. Ranking those rows last is what says so; where both sides are null
+    the strike genuinely has none and stays null.
+
+    `over` is the grouping, and it is a parameter because the same rule is applied at two
+    scales: the reader has one minute in hand and groups by strike alone, while the build
+    has a whole day and groups by minute and strike (#69). One definition either way -
+    the at-the-money volatility the header reads must be the volatility the Chain reports
+    at that strike, and two implementations of "freshest" is exactly how it would not be.
     """
-    rows = minute_slice(_on(moment, day), moment, catalog.as_expiry(expiry))
-    return rows.filter(pl.col("quoted_at") == pl.col("timestamp_utc"))
+    return (
+        pl.col("iv")
+        .sort_by(
+            pl.when(pl.col("iv").is_null())
+            .then(pl.lit(datetime.min, dtype=pl.Datetime("ms")))
+            .otherwise(pl.col("quoted_at"))
+        )
+        .last()
+        .over(*over)
+    )
 
 
 def paired_strikes(rows: pl.DataFrame) -> np.ndarray:
@@ -215,23 +326,26 @@ def forward_at(
 ) -> forward_maths.ForwardFit:
     """The Forward and Discount Factor this moment implies (#51) - **read, not fitted**.
 
-    The regression ran in the build, once per minute, and its answer is on every row of
-    that minute along with the tier that produced it. Reading it back is not a shortcut
-    past #51: the number is the engine's own, and `build_runtime.py --check` re-derives
-    every day and compares, so a tree written by older code is caught rather than served.
+    The regression ran in the build, once per minute, and its answer is on the Summary
+    row for that minute along with the tier that produced it. Reading it back is not a
+    shortcut past #51: the number is the engine's own, and `build_runtime.py --check`
+    re-derives every day and compares both artifacts, so a tree written by older code is
+    caught rather than served.
 
-    `pairs` is the one field of the fit the store does not carry, and it is recovered
-    rather than invented - it is the size of the both-sided set, which is in the minute.
-    Off the **strict** rows, because that is the set the regression actually ran on; the
-    filled minute would count strikes whose last print was hours ago.
+    **Off the Summary rather than off the Chain (#69).** All five fields are facts about
+    the minute, so every one of them repeated across the minute's 196 Chain rows; a fit is
+    now one row of a 375-row artifact. `pairs` is stored with the rest for the same reason
+    it used to be recounted here - it is the size of the both-sided **strict** set, which
+    is a property of the minute the regression ran on and not of the filled view, where a
+    strike's last print may be hours old.
     """
-    rows = strict_slice(moment, day, expiry)
+    row = _summary(moment, day, expiry)
     return forward_maths.ForwardFit(
-        forward=float(rows["forward"][0]),
-        discount=float(rows["discount"][0]),
-        T=float(rows["dte_days"][0]) / TRADING_DAYS_PER_YEAR,
-        method=str(rows["forward_method"][0]),
-        pairs=int(paired_strikes(rows).size),
+        forward=float(row["forward"]),
+        discount=float(row["discount"]),
+        T=float(row["dte_days"]) / TRADING_DAYS_PER_YEAR,
+        method=str(row["forward_method"]),
+        pairs=int(row["pairs"]),
     )
 
 
@@ -268,17 +382,10 @@ def _snapshot(
         # Implied volatility is a property of the STRIKE, not of the side. Served as-of,
         # a call and its put can be minutes apart: of the 41 both-sided strikes at the
         # anchor minute only 9 share a minute, and the rest disagree by up to 0.0275. The
-        # one that belongs to the strike is the freshest of the two.
-        #
-        # Freshest of the two that HAS one. A row whose price no volatility reproduces
-        # carries null, and a null is not a fresher answer than the other side's number -
-        # it is the absence of one. Ranking those rows last is what says so; where both
-        # sides are null the strike genuinely has none and stays null.
-        pl.col("iv").sort_by(
-            pl.when(pl.col("iv").is_null())
-            .then(pl.lit(datetime.min, dtype=pl.Datetime("ms")))
-            .otherwise(pl.col("quoted_at"))
-        ).last().over("strike").alias("strike_iv"),
+        # rule is `strike_volatility`, and it is spelled there rather than here because
+        # the build applies the same one to fill the Summary's `atm_iv` (#69). One minute
+        # in hand, so the grouping is the strike alone.
+        strike_volatility("strike").alias("strike_iv"),
         (pl.lit(at) - pl.col("quoted_at")).dt.total_minutes().alias("age_minutes"),
     ).sort("strike", "option_type")
 
@@ -331,19 +438,15 @@ def spot_at(
 ) -> float:
     """The NIFTY level at the moment - what the header shows.
 
-    Off the strict minute rather than off the last row of the day up to here, which is
-    the same number: Spot is observed once per minute and repeats across every strike in
-    it, which is why #64 moves it into a summary artifact of its own.
+    Off the Summary (#69). Spot is observed once per minute and repeated across every
+    strike of that minute in the Chain, so reading it there meant opening the artifact
+    that holds 196 copies of it to take one.
     """
-    return float(strict_slice(moment, day, expiry)["spot"][0])
+    return float(_summary(moment, day, expiry)["spot"])
 
 
-def at_the_money(
-    moment: str | datetime,
-    day: str | date | None = None,
-    expiry: str | date | None = None,
-) -> float:
-    """The quoted strike nearest the **Forward** (#51).
+def at_the_money_strike(rows: pl.DataFrame, forward: float) -> float:
+    """The quoted strike nearest the **Forward** (#51), out of one strict minute.
 
     Not nearest Spot. The basis runs to +118.87 at the anchor minute, which is more than
     two 50-point intervals, so the two anchors select different strikes - 25,200 against
@@ -357,14 +460,51 @@ def at_the_money(
     Chosen among strikes quoting both sides, which is the same set the fit ran on. Where
     that set is empty - at the close, nothing quotes both - the choice widens to every
     strike quoted that minute rather than failing: a coarser answer beats none.
+
+    Takes a frame rather than a moment, because since #69 the caller is the **build**: the
+    answer is stored on the Summary row and `at_the_money` reads it back. Kept here, in
+    the module that owns what the money means, so that the rule has one home whichever
+    side of the store is applying it.
     """
-    rows = strict_slice(moment, day, expiry)
     paired = paired_strikes(rows)
     candidates = paired if paired.size else np.sort(rows["strike"].unique().to_numpy())
     if not len(candidates):
         raise StrikeNotQuoted(0.0, "--")
-    forward = forward_at(moment, day, expiry).forward
     return float(candidates[np.abs(candidates - forward).argmin()])
+
+
+def at_the_money(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> float:
+    """The at-the-money strike at this moment, read off the Summary (#69).
+
+    A fact about the minute, chosen once by the build with `at_the_money_strike` and
+    stored. What used to be a strict slice of the Chain, a set intersection and a fit is
+    one field of one row.
+    """
+    return float(_summary(moment, day, expiry)["atm_strike"])
+
+
+def at_the_money_volatility(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> float | None:
+    """The at-the-money strike's implied volatility - the header's fourth figure (#69).
+
+    The strike's one volatility, by `strike_volatility`'s rule, which is the same number
+    `ChainRow.iv` carries for that strike at that minute. That is the assertion the split
+    lives or dies on: two artifacts describing one minute must not be able to disagree
+    about it.
+
+    Nullable, and for the reason `ChainRow.iv` is: a print no volatility reproduces has
+    none, and every strike in the last minute of Expiry day is such a print. `None` is the
+    honest answer and a fabricated number is not.
+    """
+    value = _summary(moment, day, expiry)["atm_iv"]
+    return None if value is None else float(value)
 
 
 def resolve_legs(
@@ -426,14 +566,18 @@ def expiry_label(day: date = ANCHOR_DATE, expiry: date | None = None) -> str:
     the file; now it comes from the path the tree was written under, which is the one
     place a second Expiry would ever announce itself.
 
-    Read off the **scan** rather than off `expiry` directly, so that the label is the one
-    the rows actually carry and not the one the caller believed. Where no Expiry was
-    named the answer is the day's first, which is what "the Expiry of this date" can mean
-    when the caller was not given a choice; #68's dropdown always names one, and
-    `catalog.expiries` is what it lists.
+    Read off the **manifest** rather than off `expiry` directly, so the label is one the
+    tree actually holds and not the one the caller believed. The manifest is the index
+    over the partitions and the build writes it last off the tree itself, so it carries
+    the same guarantee a partition key does - and it is a twenty-four-row file rather than
+    the Chain, which is what lets `/summary` answer without opening a strike (#69).
+
+    Where no Expiry was named the answer is the day's first, which is what "the Expiry of
+    this date" can mean when the caller was not given a choice; #68's dropdown always
+    names one, and `catalog.expiries` is what it lists.
     """
-    on = chain_scan(day, expiry).select(pl.col("expiry").first()).collect().item()
-    return catalog.label(on)
+    catalog.require(day, expiry)
+    return catalog.label(expiry if expiry is not None else catalog.expiries(day)[0])
 
 
 @lru_cache(maxsize=32)
@@ -450,9 +594,14 @@ def moments(day: date = ANCHOR_DATE, expiry: date | None = None) -> list[str]:
     that compares the moment on a Chain against the entry it asked for would have found
     them unequal every single time, with nothing to see on screen. One spelling out, and
     it is the one `Date` is specified to parse.
+
+    **Off the Summary (#69).** The list of minutes *is* the Summary's index - one row per
+    minute is exactly one stop per minute - so the time control's stops are read from a
+    375-row artifact rather than distilled out of a 50,287-row one by a distinct-values
+    pass over every strike of every minute.
     """
     stamps = (
-        chain_scan(day, expiry)
+        summary_scan(day, expiry)
         .select("timestamp_utc")
         .unique()
         .sort("timestamp_utc")
@@ -478,6 +627,39 @@ def strike_bounds(
         .row(0)
     )
     return float(low), float(high)
+
+
+def summary_view(
+    moment: str | datetime,
+    day: str | date | None = None,
+    expiry: str | date | None = None,
+) -> SummaryResponse:
+    """The header, at one minute, without opening the Chain (#69).
+
+    Spot, the Forward, the Discount Factor and the at-the-money volatility, plus the
+    strike that last one belongs to and the tier that produced the Forward. Every one of
+    them is a field of a single Summary row, so the request that moving the time control
+    makes is a lookup rather than a slice of the largest artifact in the tree.
+
+    `moment` echoes back what was asked for rather than the minute that answered it,
+    exactly as `as_of_view` does - a client comparing the moment it sent against the one
+    it got must find them equal on both endpoints or on neither.
+    """
+    on = _on(moment, day)
+    series = catalog.as_expiry(expiry)
+    fit = forward_at(moment, on, series)
+
+    return SummaryResponse(
+        moment=_at(moment).isoformat(),
+        date=on.isoformat(),
+        expiry=expiry_label(on, series),
+        spot=spot_at(moment, on, series),
+        forward=fit.forward,
+        discount=fit.discount,
+        forward_method=fit.method,
+        atm_strike=at_the_money(moment, on, series),
+        atm_iv=at_the_money_volatility(moment, on, series),
+    )
 
 
 def as_of_view(

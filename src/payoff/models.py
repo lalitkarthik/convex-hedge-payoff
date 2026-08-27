@@ -288,6 +288,54 @@ class ChainResponse(BaseModel):
     rows: list[ChainRow]
 
 
+class SummaryResponse(BaseModel):
+    """The header, at one minute - and nothing about any strike (#69).
+
+    Spot, the Forward, the Discount Factor and the at-the-money volatility are facts about
+    the **minute**. In the stored Chain they repeat across every strike of that minute, so
+    a header that read them there opened the largest artifact in the tree to take four
+    numbers out of about 196 identical copies of each. They are stored once instead, one
+    row a minute, and this is that row on the wire.
+
+    Dragging the time control moves the header 375 times across a session. Every one of
+    those was a read of the Chain and is now a lookup.
+
+    **Every figure here is the one `/chain` publishes for the same minute.** That is not a
+    coincidence to be checked occasionally, it is the reason the split is safe: the build
+    reduces the Chain frame it is about to write, so there is no second derivation that
+    could drift. Two artifacts describing one minute that can disagree would be worse than
+    one artifact.
+    """
+
+    moment: str
+    """Echoed back as it was asked for, exactly as `ChainResponse.moment` is - a client
+    that compares the two must find them equal on both endpoints or on neither."""
+
+    date: str
+    expiry: str
+    """The pair this row belongs to, spelled as `/session` and `/chain` spell them."""
+
+    spot: Finite
+    forward: Finite
+    discount: Finite
+    forward_method: ForwardMethod
+    """The same four the Chain carries, from the same minute and the same fit."""
+
+    atm_strike: Finite
+    """The quoted strike nearest the **Forward** - not nearest Spot. The basis reaches
+    +118.87 at the anchor, more than two 50-point intervals, so the two anchors pick
+    different strikes. Published because the volatility below is meaningless without the
+    strike it belongs to."""
+
+    atm_iv: Finite | None = None
+    """That strike's implied volatility, by the same rule `ChainRow.iv` follows: one per
+    strike, from its freshest quote.
+
+    Nullable for the reason `ChainRow.iv` is nullable - a print that no volatility
+    reproduces has none, and every strike in the last minute of Expiry day is such a
+    print. `None` is the honest answer where a fabricated number would be read as one."""
+
+
 class SessionResponse(BaseModel):
     """What a client needs before it can ask for anything else.
 

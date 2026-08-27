@@ -19,6 +19,7 @@ from payoff.models import (
     ChainResponse,
     PresetResponse,
     SessionResponse,
+    SummaryResponse,
 )
 
 app = FastAPI(title="convex-hedge payoff engine")
@@ -131,6 +132,28 @@ def read_chain(
     is indistinguishable from one that is.
     """
     return chain.as_of_view(moment, date, expiry)
+
+
+@app.get("/summary", response_model=SummaryResponse)
+def read_summary(
+    moment: str, date: str | None = None, expiry: str | None = None
+) -> SummaryResponse:
+    """The header at one minute: Spot, the Forward, the Discount Factor, the money (#69).
+
+    **This is what moving the time control asks for.** The four figures belong to the
+    minute rather than to a strike, and in the stored Chain they repeat across every one
+    of that minute's ~196 rows; a drag across a session asked for them 375 times and
+    opened the million-row artifact 375 times to do it. They live in a 375-row-a-day
+    Summary now, and this reads one row of it. Nothing under this endpoint opens the Chain.
+
+    Same keys and same rules as `/chain`: `date` off the moment when it is omitted,
+    `expiry` spelled `10FEB26`, and **strict** - a pair the store does not hold is a 404
+    naming what it does, never a quiet substitution.
+
+    The numbers are the ones `/chain` publishes for the same minute, and by construction
+    rather than by coincidence: the build reduces the Chain frame it is about to write.
+    """
+    return chain.summary_view(moment, date, expiry)
 
 
 @app.get("/presets", response_model=PresetResponse)

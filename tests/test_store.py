@@ -24,7 +24,7 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 
-from payoff import chain, store, strategy
+from payoff import catalog, chain, store, strategy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_runtime  # noqa: E402  - scripts/ is not a package
@@ -37,8 +37,15 @@ ASSET = "NIFTY"
 EXPIRY = "2026-02-10"
 DATE = "2026-01-27"
 
-LAYOUT = f"chain_v1/asset={ASSET}/date={DATE}/expiry={EXPIRY}"
+KEYS = f"asset={ASSET}/date={DATE}/expiry={EXPIRY}"
+LAYOUT = f"chain_v1/{KEYS}"
+SUMMARY_LAYOUT = f"summary_v1/{KEYS}"
 """The tree, spelled out by hand rather than by `store.partition_path`.
+
+Two partitioned datasets since #69, and the keys are written **once** below them because
+"partitioned identically to the Chain" is the Summary's own claim: the same filter has to
+select the same minute in both, and a Summary keyed differently would serve a header for
+one minute above a table for another with nothing on screen to say so.
 
 Written twice on purpose. Every other seam in this project grades what comes back over
 HTTP, and this one cannot: a tree keyed `expiry` above `date`, or keyed `underlying`
@@ -169,12 +176,25 @@ def test_the_writer_lays_the_tree_out_in_the_agreed_order(built):
         # #70: no `asset=`, no `date=`, no `expiry=`. `max(F - K, 0)` depends on none of
         # them, so a partitioned Payoff would be twenty-four identical copies of 588 rows.
         "payoff_v1/part-0.parquet",
+        # #69: the Summary, and the keys under it are the Chain's own, character for
+        # character. It is the artifact the header reads, so the pair that selects a
+        # table has to select the header above it.
+        f"{SUMMARY_LAYOUT}/part-0.parquet",
     ]
 
-    # And the one function allowed to spell that path agrees with the literal above.
+    # And the one function allowed to spell those paths agrees with the literals above.
     partition = store.partition_path(built, asset=ASSET, date=DATE, expiry=EXPIRY)
     assert partition == built / LAYOUT
     assert partition.is_dir(), "the Hive layout the reader expects"
+
+    summary = store.partition_path(
+        built, asset=ASSET, date=DATE, expiry=EXPIRY, dataset=store.SUMMARY
+    )
+    assert summary == built / SUMMARY_LAYOUT
+    assert summary.is_dir()
+    assert summary.relative_to(built).parts[1:] == partition.relative_to(built).parts[1:], (
+        "identically partitioned: the dataset root differs and nothing below it does"
+    )
 
 
 def test_the_partition_holds_the_whole_day(built):
@@ -300,6 +320,141 @@ def test_the_manifest_says_which_expiries_pair_with_which_dates(built):
         (ASSET, date.fromisoformat(DATE), date.fromisoformat(EXPIRY), 0.0, 55_900.0)
     ]
     assert manifest.schema["date"] == pl.Date, "sortable, not a string"
+
+
+def test_the_summary_holds_one_row_a_minute_and_they_are_the_chains_own_minutes(built):
+    """#69. 376 rows against the Chain's 50,287, over exactly the same 376 minutes.
+
+    The count is the claim: a row per *minute*, never per strike. Spot, the Forward, the
+    Discount Factor and the at-the-money volatility repeat across all ~134 rows of an
+    average minute in the Chain, and this is what storing them once looks like.
+
+    **The same minutes, in the same order.** A Summary that quietly held a minute the
+    Chain does not, or missed one it does, would put a stop on the time control that
+    returns no table - or hide a minute that has one. The set equality is what says the
+    time control can be built out of this file, and the sort is what makes the row-group
+    statistics worth keeping, exactly as on the Chain.
+    """
+    summary = store.scan(built, store.SUMMARY).collect()
+    chain_rows = store.scan(built).collect()
+
+    assert summary.height == 376, "one row per minute of the anchor session"
+    assert chain_rows.height == 50_287, "and the artifact it was reduced from"
+
+    stamps = summary["timestamp_utc"].to_list()
+    assert stamps == sorted(stamps), "sorted: a filter on a minute can skip row groups"
+    assert len(set(stamps)) == len(stamps), "one row a minute, so no minute twice"
+    assert set(stamps) == set(chain_rows["timestamp_utc"].to_list()), "the Chain's own minutes"
+
+    assert [name for name in summary.columns if name not in ("asset", "date", "expiry")] == list(
+        build_runtime.SUMMARY_SCHEMA
+    )
+    assert not {"strike", "option_type", "last", "delta"} & set(summary.columns), "not a strike"
+
+
+def test_every_figure_the_summary_stores_is_the_chains_own_for_that_minute(built):
+    """The assertion the whole split lives or dies on, made on the files themselves.
+
+    Two artifacts describing one minute that can disagree are worse than one artifact.
+    They cannot disagree here because the Summary is *reduced from* the Chain frame on its
+    way to disk rather than derived a second time - and this is what says so, on all 376
+    minutes rather than at a spot check, field by field against the rows that were stored.
+
+    The at-the-money volatility is graded through `chain.strike_volatility`, which is the
+    rule `_snapshot` applies to fill `ChainRow.iv`. That is deliberately the same call the
+    build makes: what is being checked is not that two implementations agree, it is that
+    the stored number is the one that rule produces on the stored Chain.
+
+    `tests/test_api_summary.py` grades the same agreement over HTTP, where a client can
+    see it. This is the layer below, where the two files are compared directly.
+    """
+    summary = store.scan(built, store.SUMMARY).sort("timestamp_utc").collect()
+    minutes = (
+        store.scan(built)
+        .filter(chain.STRICT)
+        .select("timestamp_utc", "spot", "forward", "discount", "forward_method", "dte_days")
+        .unique()
+        .sort("timestamp_utc")
+        .collect()
+    )
+
+    assert minutes.height == summary.height, "the per-minute columns really are per minute"
+    for column in ("spot", "forward", "discount", "forward_method", "dte_days"):
+        assert summary[column].to_list() == minutes[column].to_list(), column
+
+    volatility = {
+        (stamp, strike): value
+        for stamp, strike, value in store.scan(built)
+        .select(
+            "timestamp_utc",
+            "strike",
+            chain.strike_volatility("timestamp_utc", "strike").alias("iv"),
+        )
+        .unique(subset=["timestamp_utc", "strike"])
+        .collect()
+        .rows()
+    }
+
+    for stamp, money, stored in summary.select("timestamp_utc", "atm_strike", "atm_iv").rows():
+        assert (stamp, money) in volatility, f"{money} is not quoted at {stamp}"
+        assert stored == volatility[(stamp, money)], f"the money's volatility disagrees at {stamp}"
+
+    assert summary["atm_iv"].null_count() < summary.height, "not every minute is a null"
+
+
+def test_the_header_and_the_time_control_never_open_the_chain(built, monkeypatch):
+    """#69's fourth criterion, and the one no HTTP assertion can make.
+
+    A header served *correctly* off the Chain and a header served off the Summary produce
+    byte-identical responses. The whole ticket is about which file was opened to produce
+    them, and nothing above this line can see that - so the reader's one door onto the
+    store is instrumented and the question is asked directly.
+
+    The positive control at the end is not padding. An instrument that records nothing
+    would let this pass against an implementation that read the Chain on every field, so
+    the Chain has to be shown to be visible to it before its absence means anything.
+    """
+    opened: list[str] = []
+    scan = store.scan
+
+    def watched(root, dataset=store.CHAIN):
+        opened.append(dataset)
+        return scan(root, dataset)
+
+    monkeypatch.setattr(store, "scan", watched)
+    monkeypatch.setattr(store, "runtime_root", lambda: built)
+
+    def forget() -> None:
+        for cached in (
+            chain.chain_scan, chain.summary_scan, chain.minute_slice, chain.minute_summary,
+            chain._snapshot, chain.moments, chain.expiry_label, chain.strike_bounds,
+            catalog.pairs,
+        ):
+            cached.cache_clear()
+
+    forget()
+    try:
+        on, series = date.fromisoformat(DATE), date.fromisoformat(EXPIRY)
+
+        # The time control: every stop it offers.
+        stamps = chain.moments(on, series)
+        assert len(stamps) == 376
+
+        # The header, dragged across the session. 376 of these in a real drag; three is
+        # enough to catch a read, because a read that happens happens on all of them.
+        for moment in (stamps[0], stamps[len(stamps) // 2], stamps[-1]):
+            header = chain.summary_view(moment, on, series)
+            assert header.spot > 0.0
+
+        assert opened, "the instrument saw nothing at all, so it proves nothing"
+        assert store.SUMMARY in opened, "the figures come from the summary"
+        assert store.CHAIN not in opened, f"the header opened the Chain: {sorted(set(opened))}"
+
+        opened.clear()
+        chain.as_of_view(stamps[0], on, series)
+        assert store.CHAIN in opened, "and the table, which is what the Chain is for, does"
+    finally:
+        forget()
 
 
 def test_the_payoff_is_one_unpartitioned_artifact_of_three_corners_per_contract(built):

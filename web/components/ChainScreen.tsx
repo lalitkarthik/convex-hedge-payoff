@@ -12,7 +12,14 @@ import ViewPicker from "./ViewPicker";
 
 import { buildPreset } from "@/lib/api";
 import { strategyHref, type View } from "@/lib/strategy-url";
-import type { ChainResponse, Direction, LegRequest, OptionType, SessionResponse } from "@/lib/types";
+import type {
+  ChainResponse,
+  Direction,
+  LegRequest,
+  OptionType,
+  SessionResponse,
+  SummaryResponse,
+} from "@/lib/types";
 
 /**
  * The Chain screen: pick Legs, then go and look at them.
@@ -27,11 +34,13 @@ import type { ChainResponse, Direction, LegRequest, OptionType, SessionResponse 
  */
 export default function ChainScreen({
   session,
+  summary,
   chain,
   view,
   legs,
 }: {
   session: SessionResponse;
+  summary: SummaryResponse;
   chain: ChainResponse;
   view: View;
   legs: LegRequest[];
@@ -137,7 +146,7 @@ export default function ChainScreen({
 
   return (
     <div className="shell">
-      <Header chain={chain}>
+      <Header summary={summary}>
         <ViewPicker session={session} onDate={goDate} onExpiry={goExpiry} />
         <TimeControl
           moments={session.moments}

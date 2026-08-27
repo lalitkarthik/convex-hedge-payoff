@@ -62,6 +62,39 @@ export interface SessionResponse {
   presets: string[];
 }
 
+/**
+ * The header at one minute — and nothing about any strike (#69).
+ *
+ * Spot, the Forward, the Discount Factor and the at-the-money volatility belong to the
+ * **minute**. In the stored Chain they repeat across every one of that minute's ~196
+ * rows, so a header that read them there opened the largest artifact in the tree to take
+ * four numbers out of it. They are stored once instead, one row a minute, and this is
+ * that row.
+ *
+ * Dragging the time control moves the header 375 times across a session. Every one of
+ * those was a read of the Chain and is now a lookup.
+ *
+ * Every figure here is the one `ChainResponse` publishes for the same minute — by
+ * construction, because the build reduces the Chain frame it is about to write.
+ */
+export interface SummaryResponse {
+  moment: string;
+  /** The pair this row belongs to, spelled as `/session` and `/chain` spell them. */
+  date: string;
+  expiry: string;
+  spot: number;
+  forward: number;
+  discount: number;
+  forward_method: ForwardMethod;
+  /** Nearest quoted strike to the **Forward**, not to Spot — the basis reaches +118.87. */
+  atm_strike: number;
+  /**
+   * That strike's implied volatility, by the same rule `ChainRow.iv` follows. Null where
+   * the print no volatility reproduces — every strike in the last minute of Expiry day.
+   */
+  atm_iv: number | null;
+}
+
 export interface ChainQuote {
   last: number;
   open_interest: number;

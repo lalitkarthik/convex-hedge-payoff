@@ -60,6 +60,14 @@ Since #67 the build derives **every trading date in the dataset** - twenty-four 
 1,062,024 rows, about fifty seconds - and `/chain` takes a `date`. The test suite builds three
 of the twenty-four rather than all of them; `tests/conftest.py` says which and why.
 
+It writes a **per-minute summary** beside the Chain (#69): Spot, the Forward, the Discount
+Factor and the at-the-money volatility belong to the minute rather than to a strike, and in the
+Chain they repeat across all ~196 of that minute's rows. Stored once they are 8,735 rows for
+the whole dataset against 1,062,024, and `/summary` is what the header and the time control
+read - so dragging the time control no longer opens the large file. The figures are the ones
+`/chain` publishes for the same minute, because the summary is reduced from the Chain frame on
+its way to disk rather than derived a second time.
+
 ```bash
 # once - derive every day the engine serves
 PYTHONPATH=src python scripts/build_runtime.py

@@ -11,7 +11,12 @@ import PayoffTable from "./PayoffTable";
 
 import { istClock } from "@/lib/format";
 import { strategyHref, type View } from "@/lib/strategy-url";
-import type { AnalysisResponse, ChainResponse, LegRequest, SessionResponse } from "@/lib/types";
+import type {
+  AnalysisResponse,
+  LegRequest,
+  SessionResponse,
+  SummaryResponse,
+} from "@/lib/types";
 
 /**
  * The analysis, rendered. **Nothing here computes anything.**
@@ -30,13 +35,13 @@ type Tab = "pnl" | "greeks" | "table";
 
 export default function AnalyseScreen({
   session,
-  chain,
+  summary,
   analysis,
   legs,
   view,
 }: {
   session: SessionResponse;
-  chain: ChainResponse;
+  summary: SummaryResponse;
   analysis: AnalysisResponse;
   legs: LegRequest[];
   view: View;
@@ -45,7 +50,7 @@ export default function AnalyseScreen({
 
   return (
     <div className="shell">
-      <Header chain={chain}>
+      <Header summary={summary}>
         <a className="back" href={strategyHref("/", view, legs)}>
           ← Chain
         </a>
@@ -54,7 +59,7 @@ export default function AnalyseScreen({
             it would be changing the question rather than the view. The way to another
             day is back to the Chain, which is the link immediately to the left. */}
         <span className="chip">{view.date}</span>
-        <span className="chip">{chain.expiry}</span>
+        <span className="chip">{summary.expiry}</span>
         <span className="chip">as of {istClock(view.moment)} IST</span>
         <span className="chip">{session.moment_count} minutes in session</span>
       </Header>

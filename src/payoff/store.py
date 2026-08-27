@@ -42,6 +42,30 @@ CHAIN = "chain"
 """The Chain: one row per minute, per strike, per side, with the carry-forward already
 applied (#67). Partitioned by asset, date and expiry. #64 adds a summary and a payoff."""
 
+SUMMARY = "summary"
+"""The Summary: **one row per minute**, holding only what belongs to the minute (#69).
+
+Spot, the Forward, the Discount Factor and the at-the-money volatility are facts about a
+minute rather than about a strike. In the Chain they repeat across every strike of that
+minute - about 196 rows on a dense day - and reading one of them means opening a file
+that holds 1,062,024 of them. Here they are stored once: 375 rows a day, 8,735 across the
+dataset, small enough to hold in memory for a whole session.
+
+The header shows those four figures and the time control changes them 375 times as a
+trader drags across a session. Every one of those was a touch of the large artifact and
+is now a lookup in a small one.
+
+**Partitioned identically to the Chain** - `asset`, then `date`, then `expiry` - so the
+same filter selects the same partition, and a date that exists in one exists in the other.
+A different layout here would mean the two artifacts describing one minute could be
+selected differently, which is the one failure a split like this must not introduce.
+
+It is **derived from the Chain frame the build has just written**, never solved a second
+time. Two artifacts describing one minute that can disagree are worse than one artifact;
+reducing the rows that are about to be stored is the only arrangement in which they
+cannot.
+"""
+
 PAYOFF = "payoff"
 """The Payoff of a Leg at Expiry, as corner points (#70).
 
