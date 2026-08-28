@@ -45,6 +45,38 @@ def _not_stored(request: Request, error: catalog.NotStored) -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": str(error)})
 
 
+@app.exception_handler(chain.StrikeNotQuoted)
+def _strike_not_quoted(request: Request, error: chain.StrikeNotQuoted) -> JSONResponse:
+    """A Leg naming an instrument that has no bar at or before this minute.
+
+    404, by the same rule as the two above: the request is well-formed and the thing it
+    names is not there. It escaped as a 500 until now, which said the server broke - and
+    a 500 arrives with no `detail`, so the interface had nothing to show but a blank.
+
+    Reachable without any bad input on the client's part. The quoted set is per-minute
+    *and* per-side, growing from 56 strikes at 03:45 to 94 by the close, and 50 of the
+    anchor's 91 quote one side only. So a Strategy built at noon and then dragged
+    backwards through the time control names a strike that had not yet printed. The
+    message says which strike and which side, because at that point both are news.
+    """
+    return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(chain.NotPriceable)
+def _not_priceable(request: Request, error: chain.NotPriceable) -> JSONResponse:
+    """Quoted, and still unpriceable: the strike carries no implied volatility.
+
+    422 rather than 404, and the distinction is not pedantry. Nothing is missing - the
+    instrument is right there in the Chain with a last traded price - so a client that
+    reacted to this by hiding the strike would be hiding something a trader can see. It
+    is the *model* that has no answer, which is what an unprocessable entity is.
+
+    Fourteen strikes are in this state in the last minute of 10FEB26, where the price
+    stops depending on volatility at all.
+    """
+    return JSONResponse(status_code=422, content={"detail": str(error)})
+
+
 @app.exception_handler(catalog.UnreadableExpiry)
 def _unreadable_expiry(request: Request, error: catalog.UnreadableExpiry) -> JSONResponse:
     """Text that is not an Expiry label. 422: nothing was looked up, so nothing is missing."""
