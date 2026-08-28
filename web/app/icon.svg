@@ -1,5 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="6" fill="#16202b"/>
-  <path d="M4 24 L14 24 L22 8 L28 8" fill="none" stroke="#0f9d58" stroke-width="3"
+  <!--
+    Served as a static file, so it cannot read the page's custom properties and carries
+    its own media query instead. The tile is near-black in light chrome and would vanish
+    into dark chrome, so it inverts; the green stroke reads on both and only lifts a
+    little. This follows the browser, not the in-app toggle - a favicon has no access to
+    what the page chose.
+  -->
+  <style>
+    .tile { fill: #16202b }
+    .mark { stroke: #0f9d58 }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #e6edf3 }
+      .mark { stroke: #1f8f52 }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="6"/>
+  <path class="mark" d="M4 24 L14 24 L22 8 L28 8" fill="none" stroke-width="3"
         stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

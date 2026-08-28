@@ -7,7 +7,23 @@
  * carried by weight and alignment rather than by colour.
  */
 
+/*
+ * The palette is declared three times, and the order is load-bearing.
+ *
+ * `:root` carries the complete light palette. The `@media` block redefines only the
+ * colours, and only where the trader has not asked for light - so a system set to dark
+ * wins over the default but never over an explicit choice. The `[data-theme="dark"]`
+ * block repeats those colours last, so the toggle can reach dark from a light system
+ * too. A colour defined *only* inside one of the lower blocks would have no value in
+ * the other direction, which is why every token has a value here first.
+ *
+ * `auto` is spelled as the *absence* of `data-theme`, not as `data-theme="auto"`, so
+ * the media query is what governs. See `lib/theme.ts`.
+ */
+
 :root {
+  color-scheme: light;
+
   --bg: #f6f7f9;
   --surface: #ffffff;
   --line: #e3e6ea;
@@ -24,12 +40,86 @@
   --atm: #fff6d6;
   --atm-line: #e0b400;
 
+  /* Promoted out of the rules that used to hardcode them, because each is invisible
+     or wrong when the surface underneath it changes. */
+  --row-hover: #f0f4ff;
+  --hatch: #fafbfc;
+  --on-accent: #ffffff;
+
+  /* A quote hours old is dimmed rather than hidden, and the amount is a token because
+     the same opacity does not read the same against both backgrounds. Opacity fades
+     toward the backdrop either way, so the signal does not invert - but this dim means
+     "not a live price", so it is tuned per palette rather than left at one value. */
   --stale: 0.45;
 
   --radius: 6px;
   --pad: 12px;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+
+/*
+ * Dark. Every semantic the light palette carries is preserved: `--surface` still sits
+ * *above* `--bg` rather than below it, calls stay blue, puts and losses stay the same
+ * red as each other, gains stay green. Blue and indigo are lifted, because #1f6feb and
+ * #4338ca are close to unreadable on a dark ground.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #0e1319;
+    --surface: #161d26;
+    --line: #232c38;
+    --line-strong: #33404f;
+    --ink: #e6edf3;
+    --ink-soft: #9aa7b4;
+    --ink-faint: #6b7885;
+
+    --call: #4d9bff;
+    --put: #ff6b6b;
+    --gain: #3fbf7f;
+    --loss: #ff6b6b;
+    --accent: #8b7cf6;
+    --atm: #3a3016;
+    --atm-line: #e0b400;
+
+    --row-hover: #1d2733;
+    --hatch: #1b232d;
+    /* Dark ink on the fills, not white. The hues above had to be lifted to read on a
+       dark ground, and lifting them inverted which text colour works: white on #4d9bff
+       is 2.8:1, under the threshold, while this is 6.6:1. The light palette is the
+       other way round, which is the reason this is a token at all. */
+    --on-accent: #0e1319;
+
+    --stale: 0.55;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0e1319;
+  --surface: #161d26;
+  --line: #232c38;
+  --line-strong: #33404f;
+  --ink: #e6edf3;
+  --ink-soft: #9aa7b4;
+  --ink-faint: #6b7885;
+
+  --call: #4d9bff;
+  --put: #ff6b6b;
+  --gain: #3fbf7f;
+  --loss: #ff6b6b;
+  --accent: #8b7cf6;
+  --atm: #3a3016;
+  --atm-line: #e0b400;
+
+  --row-hover: #1d2733;
+  --hatch: #1b232d;
+  --on-accent: #0e1319; /* dark ink on the lifted fills; see the media block above */
+
+  --stale: 0.55;
 }
 
 * { box-sizing: border-box; }
@@ -204,7 +294,7 @@ table.chain tbody td {
   border-bottom: 1px solid var(--line);
 }
 
-table.chain tbody tr:hover td { background: #f0f4ff; }
+table.chain tbody tr:hover td { background: var(--row-hover); }
 
 td.strike {
   text-align: center;
@@ -237,7 +327,7 @@ tr.at-the-money td.strike { box-shadow: inset 0 0 0 1px var(--atm-line); }
 .age { font-size: 10px; color: var(--ink-faint); font-family: var(--mono); }
 
 /* An unquoted side renders empty. Never a zero, never a dash that reads as a price. */
-td.blank { background: repeating-linear-gradient(45deg, transparent, transparent 6px, #fafbfc 6px, #fafbfc 12px); }
+td.blank { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--hatch) 6px, var(--hatch) 12px); }
 
 .bs { display: inline-flex; gap: 3px; }
 .bs button {
@@ -251,8 +341,8 @@ td.blank { background: repeating-linear-gradient(45deg, transparent, transparent
   color: var(--ink-soft);
   padding: 0;
 }
-.bs button.buy:hover { background: var(--call); border-color: var(--call); color: #fff; }
-.bs button.sell:hover { background: var(--put); border-color: var(--put); color: #fff; }
+.bs button.buy:hover { background: var(--call); border-color: var(--call); color: var(--on-accent); }
+.bs button.sell:hover { background: var(--put); border-color: var(--put); color: var(--on-accent); }
 
 /* --------------------------------------------------------------- panel */
 
@@ -286,7 +376,7 @@ td.blank { background: repeating-linear-gradient(45deg, transparent, transparent
   padding: 2px 0;
   cursor: pointer;
   border: none;
-  color: #fff;
+  color: var(--on-accent);
 }
 .leg .dir.b { background: var(--call); }
 .leg .dir.s { background: var(--put); }
@@ -393,7 +483,7 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
   text-decoration: none;
 }
 
-.analyse { background: var(--accent); color: #fff; width: 100%; text-align: center; }
+.analyse { background: var(--accent); color: var(--on-accent); width: 100%; text-align: center; }
 .analyse:hover { filter: brightness(1.08); }
 
 .back { border: 1px solid var(--line-strong); color: var(--ink); }
@@ -416,3 +506,51 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
   word-break: break-all;
 }
 .problem-back { display: inline-block; margin-top: 12px; color: var(--accent); font-weight: 600; }
+
+/* ---------------------------------------------------------------- theme */
+
+/* Pushed to the right end of the header. It changes how every figure looks and none of
+   what they say, so it sits apart from them rather than among them. */
+.theme {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.theme:hover { border-color: var(--accent); color: var(--accent); }
+.theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* -------------------------------------------------------- strike slider */
+
+/* Shaped like `.time`, because it is the same control doing the same thing along a
+   different axis - an index into a list of what actually exists, not a number with a
+   step. Two sliders that behaved alike and looked unlike would be the worse outcome. */
+.strike-slider { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.strike-slider input[type="range"] { flex: 1; accent-color: var(--accent); }
+.strike-slider .strike-now { min-width: 92px; text-align: right; }
+
+/* A Leg row can be picked when the slider is on screen. The cursor and the hover are
+   what say so before anything is clicked. */
+.leg-pick { cursor: pointer; }
+.legs .leg:hover .leg-pick { color: var(--accent); }
+
+/* The selected row. An accent rule on the leading edge rather than a fill: the row
+   already carries a coloured B/S pill and a filled background would fight it. */
+.leg.selected {
+  border-color: var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* A Leg with no Entry Premium is priced from the Chain. The box says so rather than
+   showing a 0, which would read as "entered for nothing". */
+.leg input::placeholder { color: var(--ink-faint); font-style: italic; opacity: 1; }

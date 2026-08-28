@@ -1,3 +1,4 @@
+import ThemeToggle from "@/components/ThemeToggle";
 import type { SummaryResponse } from "@/lib/types";
 import { level, signed, volatility } from "@/lib/format";
 
@@ -77,6 +78,9 @@ export default function Header({
       )}
 
       {children}
+      {/* Last, and pushed right by `margin-left: auto`: it changes how the figures look
+          and never what they say, so it must not sit among them competing for the eye. */}
+      <ThemeToggle />
     </header>
   );
 }

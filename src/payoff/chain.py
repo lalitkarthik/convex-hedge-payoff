@@ -88,6 +88,21 @@ under this name because it is the one `seed.MONTHS` points at as its opposite nu
 """
 
 
+class NotPriceable(ValueError):
+    """The strike is quoted, and still has no price the model can produce.
+
+    Distinct from `StrikeNotQuoted`, and the difference is the one a caller acts on:
+    there the instrument is absent, here it is present and carries no implied
+    volatility, as every strike does in the last minute of Expiry day once the price
+    stops depending on one.
+
+    A subclass of `ValueError` because that is what this was, and anything already
+    catching `ValueError` should go on catching it. It is named so the HTTP layer can
+    answer *this* without also answering every unrelated `ValueError` in the engine -
+    a handler that broad would report a bug in the server as a fault in the request.
+    """
+
+
 class StrikeNotQuoted(LookupError):
     """A strike with no quote at or before the requested moment.
 
@@ -550,7 +565,7 @@ def resolve_legs(
         # than left to surface as a `float(None)` four frames down. #31 owns what a
         # client sees; what matters at this line is that it is not a TypeError.
         if quote["strike_iv"] is None:
-            raise ValueError(
+            raise NotPriceable(
                 f"{request.strike:.0f} {request.option_type} carries no implied "
                 "volatility at this moment, so it cannot be priced"
             )

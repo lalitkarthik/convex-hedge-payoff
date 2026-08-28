@@ -32,6 +32,8 @@ const ANCHOR = "2026-01-27T06:30:00";
 // looks for it. Set locally, because this machine's browser was assembled by hand.
 const CHROME = process.env.CHROME;
 
+const STRADDLE = "25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7";
+
 let browser: Browser;
 let page: Page;
 const consoleErrors: string[] = [];
@@ -91,7 +93,6 @@ describe("the Chain page", () => {
 });
 
 describe("the Analyse page", () => {
-  const STRADDLE = "25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7";
 
   it("reproduces the whole Strategy from a cold URL", async () => {
     // The heart of #32: no click path, no store, no session - just the link. This is the
@@ -159,6 +160,136 @@ describe("the Analyse page", () => {
 
     expect(await page.locator(".problem").count()).toBe(1);
     expect(await page.locator("svg.recharts-surface").count()).toBe(0);
+  });
+});
+
+describe("the strike slider", () => {
+  it("offers only the strikes this minute quotes on this Leg's side", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    // 68 of the anchor's 91 strikes quote a call *and* carry a volatility - the two
+    // conditions the engine applies. The day's grid is 94 and the minute's chain is 91,
+    // so a slider reading either would stop on strikes that cannot be priced.
+    const slider = page.locator(".strike-slider input[type=range]");
+    expect(await slider.getAttribute("max")).toBe("67");
+    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("68 quoted");
+
+    // It opens on the first Leg, pointed at the strike that Leg actually holds.
+    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,200");
+  });
+
+  it("moves the Leg, and drops the Entry Premium so the engine reprices", async () => {
+    // The correctness assertion of this feature. `entry_premium` is optional on the
+    // wire and absent means "read the Chain's last". Carried, 344.05 would be honoured
+    // at the new strike and the published Breakeven would be wrong with nothing saying so.
+    await page.locator(".strike-slider input[type=range]").focus();
+    await page.keyboard.press("ArrowRight");
+    await page.waitForFunction(() => window.location.search.includes("25250CE"));
+
+    const url = decodeURIComponent(page.url());
+    expect(url).toContain("25250CE10FEB26S1");
+    expect(url).not.toContain("25250CE10FEB26S1@"); // the premium is gone, not zeroed
+    expect(url).toContain("25200PE10FEB26S1@326.7"); // the Leg not moved keeps its own
+
+    // A different Strategy, so different figures. The short straddle's published 670.75
+    // belongs to two Legs at one strike; this is a strangle, and its premium is the
+    // 25,250 call's own last (317.75) plus the put's 326.70. If 344.05 had been carried
+    // across, this would read 670.75 still and look untouched.
+    const metrics = await page.locator("table.kv").innerText();
+    expect(metrics).toContain("644.45");
+    expect(metrics).toContain("24,555.55"); // 25,200 - 644.45
+    expect(metrics).toContain("25,894.45"); // 25,250 + 644.45
+
+    // And the panel must not fill the empty premium with a 0, which would read as a
+    // position entered for nothing rather than one priced off the Chain.
+    const premiums = await page.locator('.legs input[aria-label="entry premium"]').all();
+    expect(await premiums[0]!.inputValue()).toBe("");
+    expect(await premiums[1]!.inputValue()).toBe("326.7");
+  });
+
+  it("reproduces the moved Strategy from the URL alone", async () => {
+    // Same property #32 exists for, now that a second control writes the address bar.
+    const moved = page.url();
+    await page.goto(moved, { waitUntil: "networkidle" });
+
+    expect(await page.locator(".legs .leg").count()).toBe(2);
+    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,250");
+  });
+
+  it("points at whichever Leg the trader picks", async () => {
+    // The put's ladder is not the call's - 64 strikes against 68 at this minute - so
+    // selecting the other Leg has to rebuild it, not just move the thumb.
+    await page.locator(".legs .leg").nth(1).click();
+
+    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("PE");
+    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("64 quoted");
+  });
+});
+
+describe("the theme", () => {
+  it("wears the dark palette when the machine asks for one", async () => {
+    // The palette is 18 custom properties on `:root`, and every component but the chart
+    // carries no colour of its own - so one token read is a fair proxy for all of them.
+    // What this actually guards is the cascade: the dark rules live behind
+    // `:root:not([data-theme="light"])`, and a selector typo there fails open to light
+    // with nothing else on screen looking wrong.
+    const dark = await browser.newPage({ colorScheme: "dark" });
+    await dark.goto(`${BASE}/?moment=${encodeURIComponent(ANCHOR)}`, { waitUntil: "networkidle" });
+
+    const background = await dark.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(background).toBe("rgb(14, 19, 25)"); // --bg dark, #0e1319
+
+    await dark.close();
+  });
+
+  it("lets a trader on a light machine choose dark anyway", async () => {
+    // The half a media query cannot do. `data-theme="dark"` has to beat a light system,
+    // which is why the palette is declared a third time rather than only in the query.
+    const light = await browser.newPage({ colorScheme: "light" });
+    await light.goto(`${BASE}/?moment=${encodeURIComponent(ANCHOR)}`, { waitUntil: "networkidle" });
+
+    expect(await light.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(
+      "rgb(246, 247, 249)", // --bg light, #f6f7f9
+    );
+
+    // Auto -> Light -> Dark: two presses from the default.
+    await light.locator("button.theme").click();
+    await light.locator("button.theme").click();
+
+    expect(await light.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
+    expect(await light.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(
+      "rgb(14, 19, 25)",
+    );
+
+    // The choice is what survives a reload, not the attribute - the inline script in
+    // `layout.tsx` has to put it back before the first paint.
+    await light.reload({ waitUntil: "networkidle" });
+    expect(await light.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
+
+    await light.close();
+  });
+
+  it("draws the P&L curve in ink that is not the background", async () => {
+    // Recharts takes colour as JS props, so these never touch the cascade; they were
+    // twelve hex literals copied from `:root` and would have stayed light. A stroke that
+    // resolves to nothing is the specific failure - `var(--nonsense)` renders as none.
+    const dark = await browser.newPage({ colorScheme: "dark" });
+    await dark.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+    await dark.waitForSelector("svg.recharts-surface");
+
+    const stroke = await dark.evaluate(() => {
+      const curve = document.querySelector("svg.recharts-surface .recharts-area-curve");
+      return curve ? getComputedStyle(curve).stroke : null;
+    });
+    expect(stroke).toBe("rgb(230, 237, 243)"); // --ink dark, #e6edf3
+
+    await dark.close();
   });
 });
 
