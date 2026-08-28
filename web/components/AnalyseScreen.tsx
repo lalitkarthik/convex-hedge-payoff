@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 
 import GreeksTable from "./GreeksTable";
 import Header from "./Header";
@@ -8,11 +9,14 @@ import LegsStrip from "./LegsStrip";
 import MetricsPanel from "./MetricsPanel";
 import PayoffChart from "./PayoffChart";
 import PayoffTable from "./PayoffTable";
+import StrikeSlider from "./StrikeSlider";
 
 import { istClock } from "@/lib/format";
 import { strategyHref, type View } from "@/lib/strategy-url";
+import { legalStrikes, withStrike } from "@/lib/strikes";
 import type {
   AnalysisResponse,
+  ChainResponse,
   LegRequest,
   SessionResponse,
   SummaryResponse,
@@ -22,10 +26,16 @@ import type {
  * The analysis, rendered. **Nothing here computes anything.**
  *
  * Every figure on this screen arrived in one `POST /analyse`: the curve, the four
- * metrics, the per-Leg Greeks, the strategy total and the payoff table. The only client
- * logic left is which tab is open — ephemeral interface state, which #32 explicitly
- * keeps *out* of the URL, because nobody wants a shared link that forces them onto the
- * sender's open tab.
+ * metrics, the per-Leg Greeks, the strategy total and the payoff table.
+ *
+ * Two pieces of client state, and both are ephemeral interface state which #32 keeps
+ * *out* of the URL: which tab is open, and which Leg the strike slider points at.
+ * Nobody wants a shared link that forces them onto the sender's open tab, and which row
+ * is highlighted is not part of the Strategy.
+ *
+ * **Moving a strike still computes nothing here.** It rewrites the address bar and lets
+ * the server component render again, exactly as the Chain page does - so the answer on
+ * screen is always one the engine gave, never one the client interpolated between two.
  *
  * The three tabs are always present. A disabled tab advertises an absence; these are all
  * derived from the same response, so switching costs no request.
@@ -37,16 +47,39 @@ export default function AnalyseScreen({
   session,
   summary,
   analysis,
+  chain,
   legs,
   view,
 }: {
   session: SessionResponse;
   summary: SummaryResponse;
   analysis: AnalysisResponse;
+  chain: ChainResponse;
   legs: LegRequest[];
   view: View;
 }) {
   const [tab, setTab] = useState<Tab>("pnl");
+
+  // Clamped rather than trusted: the Strategy can lose a Leg between renders, and an
+  // index left pointing past the end would read `undefined.strike`.
+  const [picked, setPicked] = useState(0);
+  const selected = Math.min(picked, Math.max(0, legs.length - 1));
+  const leg = legs[selected];
+
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+
+  // The Chain page's pattern, verbatim except for the path. `replace` rather than
+  // `push` so dragging a slider does not fill the back button with every strike it
+  // passed over, and `scroll: false` so the page does not jump on each commit.
+  const go = useCallback(
+    (next: LegRequest[]) => {
+      startTransition(() =>
+        router.replace(strategyHref("/analyse", view, next), { scroll: false }),
+      );
+    },
+    [router, view],
+  );
 
   return (
     <div className="shell">
@@ -65,7 +98,7 @@ export default function AnalyseScreen({
       </Header>
 
       <div className="body analyse-body">
-        <main className="main analyse-main">
+        <main className={`main analyse-main ${pending ? "pending" : ""}`}>
           {legs.length === 0 ? (
             <p className="empty">
               No Legs in this link. Go back to the Chain and pick some — the analysis is of a
@@ -116,10 +149,30 @@ export default function AnalyseScreen({
             Strategy — {legs.length} {legs.length === 1 ? "Leg" : "Legs"}
           </h2>
           {/*
-            Read-only here. Editing a Leg is the Chain's job, where the quote it is being
-            priced against is on screen beside it.
+            Direction, Quantity and Entry Premium are still the Chain's job, where the
+            quote a Leg is priced against is on screen beside it. The strike is editable
+            here because the Chain now *is* on screen - the slider offers only what this
+            minute quotes, so this is not editing blind.
           */}
-          <LegsStrip legs={legs} readOnly />
+          <LegsStrip legs={legs} readOnly selected={selected} onSelect={setPicked} />
+
+          {leg && (
+            <>
+              <h2>Strike</h2>
+              <StrikeSlider
+                strikes={legalStrikes(chain.rows, leg.option_type)}
+                strike={leg.strike}
+                optionType={leg.option_type}
+                disabled={pending}
+                onCommit={(strike) => go(withStrike(legs, selected, strike))}
+              />
+              {legs.length > 1 && (
+                <p className="note">
+                  Moving the {legs.length === 2 ? "other" : "another"} Leg? Pick its row above.
+                </p>
+              )}
+            </>
+          )}
           {/* Spot is still here, and deliberately (#72). It stopped being the axis; it
               did not stop being observed, and it is the one figure on this line that is
               measured rather than fitted. */}

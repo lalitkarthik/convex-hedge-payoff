@@ -163,6 +163,72 @@ describe("the Analyse page", () => {
   });
 });
 
+describe("the strike slider", () => {
+  it("offers only the strikes this minute quotes on this Leg's side", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    // 68 of the anchor's 91 strikes quote a call *and* carry a volatility - the two
+    // conditions the engine applies. The day's grid is 94 and the minute's chain is 91,
+    // so a slider reading either would stop on strikes that cannot be priced.
+    const slider = page.locator(".strike-slider input[type=range]");
+    expect(await slider.getAttribute("max")).toBe("67");
+    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("68 quoted");
+
+    // It opens on the first Leg, pointed at the strike that Leg actually holds.
+    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,200");
+  });
+
+  it("moves the Leg, and drops the Entry Premium so the engine reprices", async () => {
+    // The correctness assertion of this feature. `entry_premium` is optional on the
+    // wire and absent means "read the Chain's last". Carried, 344.05 would be honoured
+    // at the new strike and the published Breakeven would be wrong with nothing saying so.
+    await page.locator(".strike-slider input[type=range]").focus();
+    await page.keyboard.press("ArrowRight");
+    await page.waitForFunction(() => window.location.search.includes("25250CE"));
+
+    const url = decodeURIComponent(page.url());
+    expect(url).toContain("25250CE10FEB26S1");
+    expect(url).not.toContain("25250CE10FEB26S1@"); // the premium is gone, not zeroed
+    expect(url).toContain("25200PE10FEB26S1@326.7"); // the Leg not moved keeps its own
+
+    // A different Strategy, so different figures. The short straddle's published 670.75
+    // belongs to two Legs at one strike; this is a strangle, and its premium is the
+    // 25,250 call's own last (317.75) plus the put's 326.70. If 344.05 had been carried
+    // across, this would read 670.75 still and look untouched.
+    const metrics = await page.locator("table.kv").innerText();
+    expect(metrics).toContain("644.45");
+    expect(metrics).toContain("24,555.55"); // 25,200 - 644.45
+    expect(metrics).toContain("25,894.45"); // 25,250 + 644.45
+
+    // And the panel must not fill the empty premium with a 0, which would read as a
+    // position entered for nothing rather than one priced off the Chain.
+    const premiums = await page.locator('.legs input[aria-label="entry premium"]').all();
+    expect(await premiums[0]!.inputValue()).toBe("");
+    expect(await premiums[1]!.inputValue()).toBe("326.7");
+  });
+
+  it("reproduces the moved Strategy from the URL alone", async () => {
+    // Same property #32 exists for, now that a second control writes the address bar.
+    const moved = page.url();
+    await page.goto(moved, { waitUntil: "networkidle" });
+
+    expect(await page.locator(".legs .leg").count()).toBe(2);
+    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,250");
+  });
+
+  it("points at whichever Leg the trader picks", async () => {
+    // The put's ladder is not the call's - 64 strikes against 68 at this minute - so
+    // selecting the other Leg has to rebuild it, not just move the thumb.
+    await page.locator(".legs .leg").nth(1).click();
+
+    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("PE");
+    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("64 quoted");
+  });
+});
+
 describe("the theme", () => {
   it("wears the dark palette when the machine asks for one", async () => {
     // The palette is 18 custom properties on `:root`, and every component but the chart

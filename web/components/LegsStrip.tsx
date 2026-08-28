@@ -21,14 +21,25 @@ export default function LegsStrip({
   onChange,
   onRemove,
   readOnly = false,
+  selected,
+  onSelect,
 }: {
   legs: LegRequest[];
   onChange?: (index: number, leg: LegRequest) => void;
   onRemove?: (index: number) => void;
-  /** The Analyse page shows the Legs beside the numbers but does not edit them - the
-      quote a Leg is priced against lives on the Chain, and editing away from it would
-      be editing blind. */
+  /** Direction, Quantity and Entry Premium are not edited on the Analyse page.
+      The strike now is, through `StrikeSlider` - and the objection this flag used to
+      carry, that the quote a Leg is priced against lives on the Chain, is answered
+      rather than waived: Analyse fetches the Chain, the slider offers only strikes it
+      actually quotes, and moving one drops the Entry Premium so the engine reprices
+      against the quote at the new strike. What is still refused here is editing a
+      price by hand, away from any quote at all. */
   readOnly?: boolean;
+  /** Which Leg the strike slider is pointed at. Interface state, deliberately not in
+      the URL: #32 puts the *Strategy* in the address bar, and which row is highlighted
+      is not part of the Strategy - a shared link would otherwise carry it. */
+  selected?: number;
+  onSelect?: (index: number) => void;
 }) {
   if (legs.length === 0) {
     return (
@@ -41,7 +52,13 @@ export default function LegsStrip({
   return (
     <div className="legs">
       {legs.map((leg, index) => (
-        <div className="leg" key={`${leg.strike}${leg.option_type}${index}`}>
+        <div
+          className={`leg ${onSelect && selected === index ? "selected" : ""}`}
+          key={`${leg.strike}${leg.option_type}${index}`}
+          // The row is the target rather than a separate radio: it is already the thing
+          // that names the Leg, and a second control beside it would say there are two.
+          onClick={onSelect ? () => onSelect(index) : undefined}
+        >
           <button
             className={`dir ${leg.direction === 1 ? "b" : "s"}`}
             title="Flip between bought and sold"
@@ -51,7 +68,7 @@ export default function LegsStrip({
             {leg.direction === 1 ? "B" : "S"}
           </button>
 
-          <span>
+          <span className={onSelect ? "leg-pick" : undefined}>
             {fmtStrike(leg.strike)} {leg.option_type}
           </span>
 
@@ -67,10 +84,24 @@ export default function LegsStrip({
             }
           />
 
+          {/*
+            Blank, not zero, when the Leg carries no Entry Premium. Absent means "price
+            it at the Chain's last traded price", and until the strike slider existed
+            every Leg reached this component with a premium already on it, so the `?? 0`
+            this replaces never fired. It fires now on any Leg that has been moved - and
+            a 0 in this box says the trader entered the position for nothing, which is
+            the same false reading `legs-url.ts` refuses to write into the URL.
+          */}
           <input
             type="number"
             step={0.05}
-            value={leg.entry_premium ?? 0}
+            value={leg.entry_premium ?? ""}
+            placeholder="chain"
+            title={
+              leg.entry_premium === undefined || leg.entry_premium === null
+                ? "Priced at the Chain's last traded price for this strike"
+                : "Entry Premium"
+            }
             aria-label="entry premium"
             readOnly={readOnly}
             onChange={(event) =>

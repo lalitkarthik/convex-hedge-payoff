@@ -525,3 +525,28 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
 }
 .theme:hover { border-color: var(--accent); color: var(--accent); }
 .theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* -------------------------------------------------------- strike slider */
+
+/* Shaped like `.time`, because it is the same control doing the same thing along a
+   different axis - an index into a list of what actually exists, not a number with a
+   step. Two sliders that behaved alike and looked unlike would be the worse outcome. */
+.strike-slider { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.strike-slider input[type="range"] { flex: 1; accent-color: var(--accent); }
+.strike-slider .strike-now { min-width: 92px; text-align: right; }
+
+/* A Leg row can be picked when the slider is on screen. The cursor and the hover are
+   what say so before anything is clicked. */
+.leg-pick { cursor: pointer; }
+.legs .leg:hover .leg-pick { color: var(--accent); }
+
+/* The selected row. An accent rule on the leading edge rather than a fill: the row
+   already carries a coloured B/S pill and a filled background would fight it. */
+.leg.selected {
+  border-color: var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* A Leg with no Entry Premium is priced from the Chain. The box says so rather than
+   showing a 0, which would read as "entered for nothing". */
+.leg input::placeholder { color: var(--ink-faint); font-style: italic; opacity: 1; }

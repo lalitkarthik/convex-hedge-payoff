@@ -171,3 +171,34 @@ def test_the_two_refusals_are_told_apart(client):
 
     assert absent.status_code == 404
     assert present_but_unpriceable.status_code == 422
+
+
+@pytest.mark.parametrize("option_type, side", [("CE", "call"), ("PE", "put")])
+def test_the_chain_predicts_exactly_what_analyse_will_accept(client, option_type, side):
+    """The contract the strike slider is built on, asserted as a set equality.
+
+    `web/lib/strikes.ts` builds the ladder the trader drags along by filtering the Chain
+    on two conditions - the side is quoted, and the strike carries an implied volatility
+    - because those are the two `resolve_legs` applies. So **the set of strikes the
+    interface offers and the set the engine can price must be the same set**, and that
+    equality is what makes the slider unable to produce a refusal.
+
+    Both directions matter. Offering a strike that will not price is a dead end the
+    trader was invited to walk into; withholding one that would have priced silently
+    hides a tradable instrument. Neither is visible from the frontend alone, which is
+    why the assertion lives here, against the engine that decides.
+
+    At the anchor this is 68 strikes offered of 91 for calls, and 64 of 91 for puts.
+    """
+    rows = client.get("/chain", params={"moment": MOMENT}).json()["rows"]
+
+    offered = {r["strike"] for r in rows if r["iv"] is not None and r[side] is not None}
+    withheld = {r["strike"] for r in rows} - offered
+    assert offered and withheld, "a minute that offered everything would prove nothing"
+
+    def prices(strike: float) -> bool:
+        leg = {"strike": strike, "option_type": option_type, "direction": 1}
+        return analyse(client, [leg]).status_code == 200
+
+    assert {k for k in offered if not prices(k)} == set(), "offered a strike that will not price"
+    assert {k for k in withheld if prices(k)} == set(), "withheld a strike that would have priced"
