@@ -86,7 +86,11 @@
 
     --row-hover: #1d2733;
     --hatch: #1b232d;
-    --on-accent: #ffffff;
+    /* Dark ink on the fills, not white. The hues above had to be lifted to read on a
+       dark ground, and lifting them inverted which text colour works: white on #4d9bff
+       is 2.8:1, under the threshold, while this is 6.6:1. The light palette is the
+       other way round, which is the reason this is a token at all. */
+    --on-accent: #0e1319;
 
     --stale: 0.55;
   }
@@ -113,7 +117,7 @@
 
   --row-hover: #1d2733;
   --hatch: #1b232d;
-  --on-accent: #ffffff;
+  --on-accent: #0e1319; /* dark ink on the lifted fills; see the media block above */
 
   --stale: 0.55;
 }
