@@ -27,6 +27,15 @@ import { level, price } from "@/lib/format";
  * where the curve crosses zero, which is why the fill switches at the axis rather than
  * at a rounded gridline.
  *
+ * **Every colour here is a `var()`, and that is load-bearing.** Recharts takes colour
+ * as JS props, so these values never touch the CSS cascade - and until the theme work
+ * they were twelve hex literals hand-copied from `:root`, the one place in the app where
+ * the palette was forked. A dark theme would have left the curve stroked near-black on a
+ * near-black ground. Recharts forwards them to the SVG untouched: its only inspection of
+ * `stroke` is `stroke !== 'none'`, an equality test, never a parse. The Tooltip is the
+ * exception worth knowing about - its card defaults to white with dark text, set inline
+ * by Recharts, so there was no literal here to find and `contentStyle` has to say so.
+ *
  * Reference lines at the Forward and at every Breakeven. **The line never renders a
  * gap**: NaN cannot reach it — the wire type forbids one and the arithmetic upstream
  * cannot produce one — so a gap would mean a bug here rather than missing data.
@@ -62,8 +71,8 @@ export default function PayoffChart({
         <ComposedChart data={points} margin={{ top: 8, right: 8, bottom: 18, left: 4 }}>
           <defs>
             <linearGradient id="pnl" x1="0" y1="0" x2="0" y2="1">
-              <stop offset={zero} stopColor="#0f9d58" stopOpacity={0.75} />
-              <stop offset={zero} stopColor="#d1383a" stopOpacity={0.75} />
+              <stop offset={zero} stopColor="var(--gain)" stopOpacity={0.75} />
+              <stop offset={zero} stopColor="var(--loss)" stopOpacity={0.75} />
             </linearGradient>
           </defs>
 
@@ -72,7 +81,7 @@ export default function PayoffChart({
             type="number"
             domain={["dataMin", "dataMax"]}
             tickFormatter={(value: number) => level(value)}
-            tick={{ fontSize: 10, fill: "#93a0ac" }}
+            tick={{ fontSize: 10, fill: "var(--ink-faint)" }}
             tickCount={6}
             // Titled, because an unlabelled axis of five-figure index levels reads as
             // Spot to anyone who has seen one of these charts before (#72).
@@ -81,33 +90,43 @@ export default function PayoffChart({
               position: "insideBottom",
               offset: -12,
               fontSize: 10,
-              fill: "#93a0ac",
+              fill: "var(--ink-faint)",
             }}
           />
           <YAxis
             tickFormatter={(value: number) => level(value)}
-            tick={{ fontSize: 10, fill: "#93a0ac" }}
+            tick={{ fontSize: 10, fill: "var(--ink-faint)" }}
             width={54}
           />
 
           <Tooltip
             labelFormatter={(value: number) => `Forward ${level(value)}`}
             formatter={(value: number) => [price(value), "P&L at expiry"]}
-            contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #cdd3da" }}
+            contentStyle={{
+              fontSize: 12,
+              borderRadius: 6,
+              border: "1px solid var(--line-strong)",
+              // Recharts defaults the card to white with dark text, and does it inline,
+              // so unlike the eleven above there was no literal here to find by grep.
+              backgroundColor: "var(--surface)",
+              color: "var(--ink)",
+            }}
+            itemStyle={{ color: "var(--ink)" }}
+            labelStyle={{ color: "var(--ink-soft)" }}
           />
 
-          <ReferenceLine y={0} stroke="#5b6773" strokeWidth={1} />
+          <ReferenceLine y={0} stroke="var(--ink-soft)" strokeWidth={1} />
           <ReferenceLine
             x={forward}
-            stroke="#4338ca"
+            stroke="var(--accent)"
             strokeDasharray="4 3"
-            label={{ value: "forward", position: "top", fontSize: 10, fill: "#4338ca" }}
+            label={{ value: "forward", position: "top", fontSize: 10, fill: "var(--accent)" }}
           />
           {breakevens.map((breakeven) => (
             <ReferenceLine
               key={breakeven}
               x={breakeven}
-              stroke="#93a0ac"
+              stroke="var(--ink-faint)"
               strokeDasharray="2 3"
               label={{
                 // Each Breakeven labelled with its distance from the Forward, because
@@ -116,7 +135,7 @@ export default function PayoffChart({
                 value: `${(((breakeven - forward) / forward) * 100).toFixed(1)}%`,
                 position: "insideTopRight",
                 fontSize: 9,
-                fill: "#5b6773",
+                fill: "var(--ink-soft)",
               }}
             />
           ))}
@@ -124,7 +143,7 @@ export default function PayoffChart({
           <Area
             type="linear"
             dataKey="pnl"
-            stroke="#16202b"
+            stroke="var(--ink)"
             strokeWidth={1.6}
             fill="url(#pnl)"
             isAnimationActive={false}

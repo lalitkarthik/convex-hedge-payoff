@@ -32,6 +32,8 @@ const ANCHOR = "2026-01-27T06:30:00";
 // looks for it. Set locally, because this machine's browser was assembled by hand.
 const CHROME = process.env.CHROME;
 
+const STRADDLE = "25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7";
+
 let browser: Browser;
 let page: Page;
 const consoleErrors: string[] = [];
@@ -91,7 +93,6 @@ describe("the Chain page", () => {
 });
 
 describe("the Analyse page", () => {
-  const STRADDLE = "25200CE10FEB26S1@344.05,25200PE10FEB26S1@326.7";
 
   it("reproduces the whole Strategy from a cold URL", async () => {
     // The heart of #32: no click path, no store, no session - just the link. This is the
@@ -159,6 +160,70 @@ describe("the Analyse page", () => {
 
     expect(await page.locator(".problem").count()).toBe(1);
     expect(await page.locator("svg.recharts-surface").count()).toBe(0);
+  });
+});
+
+describe("the theme", () => {
+  it("wears the dark palette when the machine asks for one", async () => {
+    // The palette is 18 custom properties on `:root`, and every component but the chart
+    // carries no colour of its own - so one token read is a fair proxy for all of them.
+    // What this actually guards is the cascade: the dark rules live behind
+    // `:root:not([data-theme="light"])`, and a selector typo there fails open to light
+    // with nothing else on screen looking wrong.
+    const dark = await browser.newPage({ colorScheme: "dark" });
+    await dark.goto(`${BASE}/?moment=${encodeURIComponent(ANCHOR)}`, { waitUntil: "networkidle" });
+
+    const background = await dark.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(background).toBe("rgb(14, 19, 25)"); // --bg dark, #0e1319
+
+    await dark.close();
+  });
+
+  it("lets a trader on a light machine choose dark anyway", async () => {
+    // The half a media query cannot do. `data-theme="dark"` has to beat a light system,
+    // which is why the palette is declared a third time rather than only in the query.
+    const light = await browser.newPage({ colorScheme: "light" });
+    await light.goto(`${BASE}/?moment=${encodeURIComponent(ANCHOR)}`, { waitUntil: "networkidle" });
+
+    expect(await light.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(
+      "rgb(246, 247, 249)", // --bg light, #f6f7f9
+    );
+
+    // Auto -> Light -> Dark: two presses from the default.
+    await light.locator("button.theme").click();
+    await light.locator("button.theme").click();
+
+    expect(await light.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
+    expect(await light.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe(
+      "rgb(14, 19, 25)",
+    );
+
+    // The choice is what survives a reload, not the attribute - the inline script in
+    // `layout.tsx` has to put it back before the first paint.
+    await light.reload({ waitUntil: "networkidle" });
+    expect(await light.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
+
+    await light.close();
+  });
+
+  it("draws the P&L curve in ink that is not the background", async () => {
+    // Recharts takes colour as JS props, so these never touch the cascade; they were
+    // twelve hex literals copied from `:root` and would have stayed light. A stroke that
+    // resolves to nothing is the specific failure - `var(--nonsense)` renders as none.
+    const dark = await browser.newPage({ colorScheme: "dark" });
+    await dark.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+    await dark.waitForSelector("svg.recharts-surface");
+
+    const stroke = await dark.evaluate(() => {
+      const curve = document.querySelector("svg.recharts-surface .recharts-area-curve");
+      return curve ? getComputedStyle(curve).stroke : null;
+    });
+    expect(stroke).toBe("rgb(230, 237, 243)"); // --ink dark, #e6edf3
+
+    await dark.close();
   });
 });
 
