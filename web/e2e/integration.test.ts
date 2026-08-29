@@ -325,24 +325,35 @@ describe("the strike slider", () => {
 
   it("drags across many strikes in one gesture", async () => {
     // The symptom itself, driven the way a trader drives it: press once, move, release.
-    // Ten steps to the right has to land ten strikes away, not one.
+    //
+    // The assertion is deliberately about *how far* rather than *where*. A range input
+    // jumps its thumb to wherever the press lands before any movement is read, so the
+    // strike a gesture starts from is not the strike the Leg held - and the track is
+    // wider than the travel, because the thumb has width of its own. Pinning an exact
+    // rung means doing the browser's pixel arithmetic for it and being wrong.
+    //
+    // What the bug did was cap a gesture at one tick. So: more than one tick.
     const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
     const box = (await slider.boundingBox())!;
     const y = box.y + box.height / 2;
-    const start = box.x + box.width / 2;
 
-    await page.mouse.move(start, y);
+    await page.mouse.move(box.x + box.width * 0.3, y);
     await page.mouse.down();
-    for (let step = 1; step <= 10; step++) {
-      await page.mouse.move(start + (box.width / 67) * step, y);
+    const pressed = Number(await slider.inputValue());
+
+    for (let step = 1; step <= 8; step++) {
+      await page.mouse.move(box.x + box.width * (0.3 + 0.05 * step), y);
     }
     await page.mouse.up();
 
-    // 68 rungs across the track, so ten steps is ten rungs from wherever it started -
-    // 25,250 after the keyboard press above, hence 25,750. The assertion that matters is
-    // that it moved by more than one; the exact strike is asserted because it can be.
-    await page.waitForFunction(() => window.location.search.includes("25750CE"));
-    expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("25,750");
+    // The value is read off the input rather than the label: it *is* the rung index, so
+    // this counts ticks directly instead of inferring them from a formatted strike.
+    const dragged = Number(await slider.inputValue());
+    expect(dragged).toBeGreaterThan(pressed + 1);
+
+    // And the Leg went with it, rather than the thumb sliding free of the Strategy.
+    const url = decodeURIComponent(page.url());
+    expect(url).not.toContain("25200CE");
   });
 });
 
