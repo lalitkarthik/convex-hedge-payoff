@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type WheelEvent } from "react";
+import { useId, useMemo, useState, type WheelEvent } from "react";
 import {
   Area,
   ComposedChart,
@@ -30,6 +30,15 @@ import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
  * visibly different. **Two Areas clamped either side of zero**, not one Area painted with
  * a gradient - see `lib/curve.ts` for why that was abandoned after three failed attempts
  * to place a gradient offset correctly. There is no offset now, and so nothing to place.
+ *
+ * Each fill fades to nothing as it approaches the axis, so the colour is strongest where
+ * the position is furthest from breaking even. **This is a gradient again and it is safe
+ * this time**, which is worth being precise about: the failure before was a *computed*
+ * offset that had to land exactly on zero within the shape's bounding box. These two
+ * shapes are already anchored there. The gain Area spans exactly `0 → max gain` and the
+ * loss Area exactly `min loss → 0`, because each series is clamped, so the fade runs a
+ * fixed 0 to 1 across the box and there is no number to get wrong. The stops never change
+ * either, which is what made the old one need its id re-keyed to repaint.
  *
  * **Every colour here is a `var()`, and that is load-bearing.** Recharts takes colour
  * as JS props, so these values never touch the CSS cascade - and until the theme work
@@ -97,6 +106,13 @@ export default function PayoffChart({
   // the colour rule lives; nothing here decides where green becomes red.
   const shaped = useMemo(() => split(points), [points]);
 
+  // Scoped rather than a constant: a second chart on the page would otherwise share one
+  // pair of `url(#...)` targets, and whichever mounted last would repaint the other.
+  //
+  // Colons stripped - React spells these `:r0:`, and a colon inside `url(#...)` is the
+  // kind of thing that resolves in one browser and silently paints nothing in another.
+  const ids = useId().replace(/:/g, "");
+
   const by = (factor: number, focus = (span.min + span.max) / 2) =>
     setHeld(zoom(full, span, factor, focus));
 
@@ -140,6 +156,19 @@ export default function PayoffChart({
       <div className="chart-plot" style={{ height }} onWheel={onWheel}>
       <ResponsiveContainer>
         <ComposedChart data={shaped} margin={{ top: 26, right: 12, bottom: 18, left: 4 }}>
+          <defs>
+            {/* Vertical, opaque at the extreme and transparent at the axis. Anchored by
+                the clamped series rather than by any offset - see the docblock. */}
+            <linearGradient id={`${ids}-gain`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor="var(--gain)" stopOpacity={0.72} />
+              <stop offset="1" stopColor="var(--gain)" stopOpacity={0.04} />
+            </linearGradient>
+            <linearGradient id={`${ids}-loss`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor="var(--loss)" stopOpacity={0.04} />
+              <stop offset="1" stopColor="var(--loss)" stopOpacity={0.72} />
+            </linearGradient>
+          </defs>
+
           <XAxis
             dataKey="forward"
             type="number"
@@ -225,8 +254,7 @@ export default function PayoffChart({
             type="linear"
             dataKey="gain"
             stroke="none"
-            fill="var(--gain)"
-            fillOpacity={0.75}
+            fill={`url(#${ids}-gain)`}
             isAnimationActive={false}
             dot={false}
             tooltipType="none"
@@ -236,8 +264,7 @@ export default function PayoffChart({
             type="linear"
             dataKey="loss"
             stroke="none"
-            fill="var(--loss)"
-            fillOpacity={0.75}
+            fill={`url(#${ids}-loss)`}
             isAnimationActive={false}
             dot={false}
             tooltipType="none"

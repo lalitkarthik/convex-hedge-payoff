@@ -521,6 +521,29 @@ describe("the payoff chart", () => {
     expect(loss.y).toBeGreaterThanOrEqual(zero.y - 1);
   });
 
+  it("fades each fill out as it approaches the axis", async () => {
+    // Strongest where the position is furthest from breaking even, invisible where it is
+    // level. Both gradients are read, because they run in opposite directions - the gain
+    // fades downward toward the axis and the loss fades upward to it, and a copy-paste
+    // that pointed both the same way would leave one of them solid against the axis.
+    const opacity = async (which: "gain" | "loss", stop: 0 | 1) =>
+      Number(
+        await page
+          .locator(`svg.recharts-surface linearGradient[id$="-${which}"] stop`)
+          .nth(stop)
+          .getAttribute("stop-opacity"),
+      );
+
+    // Gain: opaque at the top of its box, which is its maximum profit; clear at the axis.
+    expect(await opacity("gain", 0)).toBeGreaterThan(await opacity("gain", 1));
+    // Loss: the mirror. Clear at the axis, opaque at the bottom.
+    expect(await opacity("loss", 0)).toBeLessThan(await opacity("loss", 1));
+
+    // And it really does reach nearly nothing, rather than merely being a bit lighter.
+    expect(await opacity("gain", 1)).toBeLessThan(0.1);
+    expect(await opacity("loss", 0)).toBeLessThan(0.1);
+  });
+
   it("still meets the axis after a Leg moves", async () => {
     // The case that survived two fixes: correct on load, wrong the moment a strike moved.
     // The old gradient was referenced by id, and browsers do not reliably repaint a
