@@ -89,17 +89,22 @@ describe("the Chain page", () => {
     // and not where spot does (25,100.25). Reading the call side alone would pass with
     // either reference; reading both at both strikes is what pins it, because Spot would
     // have flipped a full strike earlier.
-    const washed = async (strike: string, side: "CE" | "PE") => {
-      const cells = page.locator(`tr:has(td.strike:text-is("${strike}")) td.num`);
-      // Calls occupy the first four numeric cells of a row, puts the last four.
-      const at = side === "CE" ? 0 : (await cells.count()) - 1;
-      return ((await cells.nth(at).getAttribute("class")) ?? "").includes("itm");
+    //
+    // `has-text` and not `text-is`: the starred cell reads "25,200 ★", so an exact match
+    // finds nothing and waits five seconds to say so. Strikes are all six characters, so
+    // a substring match is still unique to one row.
+    //
+    // The row is split on the shared IV column, which is the divider between the two
+    // sides - the alternative is counting numeric cells in from each end, and the count
+    // is not constant, because an unquoted side renders hatched cells instead.
+    const washed = async (strike: string) => {
+      const row = await page.locator(`tr:has(td.strike:has-text("${strike}"))`).first().innerHTML();
+      const [calls, puts] = row.split('class="iv"');
+      return { CE: calls!.includes("itm"), PE: puts!.includes("itm") };
     };
 
-    expect(await washed("25,200", "CE")).toBe(true);
-    expect(await washed("25,200", "PE")).toBe(false);
-    expect(await washed("25,250", "CE")).toBe(false);
-    expect(await washed("25,250", "PE")).toBe(true);
+    expect(await washed("25,200")).toEqual({ CE: true, PE: false });
+    expect(await washed("25,250")).toEqual({ CE: false, PE: true });
   });
 
   it("puts a picked Leg in the address bar, where it survives a reload", async () => {
