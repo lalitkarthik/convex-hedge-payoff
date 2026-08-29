@@ -290,7 +290,7 @@ describe("the strike slider", () => {
     expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("25,250");
     expect(await page.locator("table.kv").innerText()).toContain("644.45");
   });
-}
+
   it("survives its own edit, so one press drags the whole way", async () => {
     // Reported by hand: the thumb moved one strike and stopped dead, and the mouse had to
     // be released and pressed again for each one after that.
