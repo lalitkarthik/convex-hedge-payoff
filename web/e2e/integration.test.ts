@@ -485,6 +485,36 @@ describe("the payoff chart", () => {
     expect(await reset.isDisabled()).toBe(true);
   });
 
+  /*
+   * Where the two fills sit relative to the zero line, read in **one frame**.
+   *
+   * Separate locator calls are separate round-trips, and the vertical axis refits
+   * whenever the curve changes - so measuring the areas from one render and the zero
+   * line from the next reports a gap that was never on screen. That is a flaw in the
+   * assertion rather than in the chart, and it only shows up on the test that edits.
+   *
+   * The zero line is picked by shape rather than by position: it is the horizontal
+   * reference line, where the Forward and the Breakevens are vertical. Taking the first
+   * one would depend on declaration order in a component nobody would think to check
+   * after adding a reference line.
+   */
+  const geometry = () =>
+    page.evaluate(() => {
+      const svg = document.querySelector("svg.recharts-surface")!;
+      const areas = Array.from(svg.querySelectorAll(".recharts-area-area"));
+      const lines = Array.from(svg.querySelectorAll(".recharts-reference-line line"));
+      const flat = lines
+        .map((line) => line.getBoundingClientRect())
+        .find((box) => box.width > box.height);
+
+      return {
+        areas: areas.length,
+        gainBottom: areas[0]?.getBoundingClientRect().bottom ?? null,
+        lossTop: areas[1]?.getBoundingClientRect().top ?? null,
+        zero: flat?.top ?? null,
+      };
+    });
+
   it("meets the axis exactly, with no band of profit painted as loss", async () => {
     // Reported three times, and the first two fixes were arithmetically right and still
     // wrong on screen. The colour used to come from a gradient whose boundary was a
@@ -492,33 +522,22 @@ describe("the payoff chart", () => {
     // something this code could see - so it drifted with padding, with zoom, and with a
     // repaint that never happened.
     //
-    // Two clamped Areas now, so the assertion is about *shape* rather than about an
-    // offset: the green fill must not extend below the zero line, and the red must not
-    // extend above it. That is checkable without knowing any of Recharts' internals, and
-    // it is the property a trader is actually looking at.
+    // Two clamped Areas now, so the assertion is about *shape* rather than an offset:
+    // the green fill must not extend below the zero line, and the red must not extend
+    // above it. That needs no knowledge of Recharts' internals, and it is the property a
+    // trader is actually looking at.
     await page.goto(
       `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
       { waitUntil: "networkidle" },
     );
 
-    const bounds = async () => {
-      const areas = await page.locator("svg.recharts-surface .recharts-area-area").all();
-      expect(areas.length).toBe(2);
-      const [gain, loss] = await Promise.all(areas.map((a) => a.boundingBox()));
-      // The zero line is a ReferenceLine, and it is the only horizontal one at y=0.
-      const zero = (await page
-        .locator("svg.recharts-surface .recharts-reference-line line")
-        .first()
-        .boundingBox())!;
-      return { gain: gain!, loss: loss!, zero };
-    };
+    const box = await geometry();
+    expect(box.areas).toBe(2);
 
-    const { gain, loss, zero } = await bounds();
-
-    // One pixel of slack for the stroke's own width and subpixel rounding. The bug being
-    // guarded was 3.6px and grew with the padding, so this is nowhere near it.
-    expect(gain.y + gain.height).toBeLessThanOrEqual(zero.y + 1);
-    expect(loss.y).toBeGreaterThanOrEqual(zero.y - 1);
+    // One pixel of slack for stroke width and subpixel rounding. The band being guarded
+    // against was 3.6px and grew with the padding, so this is nowhere near it.
+    expect(box.gainBottom!).toBeLessThanOrEqual(box.zero! + 1);
+    expect(box.lossTop!).toBeGreaterThanOrEqual(box.zero! - 1);
   });
 
   it("fades each fill out as it approaches the axis", async () => {
@@ -534,9 +553,7 @@ describe("the payoff chart", () => {
           .getAttribute("stop-opacity"),
       );
 
-    // Gain: opaque at the top of its box, which is its maximum profit; clear at the axis.
     expect(await opacity("gain", 0)).toBeGreaterThan(await opacity("gain", 1));
-    // Loss: the mirror. Clear at the axis, opaque at the bottom.
     expect(await opacity("loss", 0)).toBeLessThan(await opacity("loss", 1));
 
     // And it really does reach nearly nothing, rather than merely being a bit lighter.
@@ -549,20 +566,23 @@ describe("the payoff chart", () => {
     // The old gradient was referenced by id, and browsers do not reliably repaint a
     // reference whose target changed only in an attribute - so asserting on a freshly
     // loaded page could never have caught it.
+    const before = await page.locator("table.kv").innerText();
+
     const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
     await slider.focus();
     for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
-    await page.waitForFunction(() => !window.location.search.includes("25200CE"));
 
-    const areas = await page.locator("svg.recharts-surface .recharts-area-area").all();
-    const [gain, loss] = await Promise.all(areas.map((a) => a.boundingBox()));
-    const zero = (await page
-      .locator("svg.recharts-surface .recharts-reference-line line")
-      .first()
-      .boundingBox())!;
+    // Waited on the *figures*, not the URL. The address bar is rewritten synchronously
+    // with the gesture and the curve arrives when the engine answers, so measuring on the
+    // URL measures a chart that has not been redrawn yet.
+    await page.waitForFunction(
+      (was) => document.querySelector("table.kv")?.textContent !== was,
+      before,
+    );
 
-    expect(gain!.y + gain!.height).toBeLessThanOrEqual(zero.y + 1);
-    expect(loss!.y).toBeGreaterThanOrEqual(zero.y - 1);
+    const box = await geometry();
+    expect(box.gainBottom!).toBeLessThanOrEqual(box.zero! + 1);
+    expect(box.lossTop!).toBeGreaterThanOrEqual(box.zero! - 1);
   });
 
   it("leaves room for the forward label rather than clipping it", async () => {
