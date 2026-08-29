@@ -556,9 +556,16 @@ describe("the payoff chart", () => {
     expect(await opacity("gain", 0)).toBeGreaterThan(await opacity("gain", 1));
     expect(await opacity("loss", 0)).toBeLessThan(await opacity("loss", 1));
 
-    // And it really does reach nearly nothing, rather than merely being a bit lighter.
-    expect(await opacity("gain", 1)).toBeLessThan(0.1);
-    expect(await opacity("loss", 0)).toBeLessThan(0.1);
+    // And it really does reach nothing, rather than merely being a bit lighter.
+    expect(await opacity("gain", 1)).toBeLessThan(0.05);
+    expect(await opacity("loss", 0)).toBeLessThan(0.05);
+
+    // The strong end is a wash, not a fill. At 0.72 the ramp read as a solid block of
+    // colour with a thin fade at the bottom, which is the opposite of the intended
+    // effect: the gridlines and the breakeven markers behind it were lost. Half opacity
+    // is the ceiling for something the curve is meant to be read *through*.
+    expect(await opacity("gain", 0)).toBeLessThan(0.5);
+    expect(await opacity("loss", 1)).toBeLessThan(0.5);
   });
 
   it("still meets the axis after a Leg moves", async () => {

@@ -32,7 +32,8 @@ import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
  * to place a gradient offset correctly. There is no offset now, and so nothing to place.
  *
  * Each fill fades to nothing as it approaches the axis, so the colour is strongest where
- * the position is furthest from breaking even. **This is a gradient again and it is safe
+ * the position is furthest from breaking even - and even there it is a wash, at a third
+ * opacity, because everything worth reading on this chart is drawn on top of it. **This is a gradient again and it is safe
  * this time**, which is worth being precise about: the failure before was a *computed*
  * offset that had to land exactly on zero within the shape's bounding box. These two
  * shapes are already anchored there. The gain Area spans exactly `0 → max gain` and the
@@ -157,15 +158,24 @@ export default function PayoffChart({
       <ResponsiveContainer>
         <ComposedChart data={shaped} margin={{ top: 26, right: 12, bottom: 18, left: 4 }}>
           <defs>
-            {/* Vertical, opaque at the extreme and transparent at the axis. Anchored by
-                the clamped series rather than by any offset - see the docblock. */}
+            {/* Vertical, a wash at the extreme and nothing at all at the axis. Anchored
+                by the clamped series rather than by any offset - see the docblock.
+
+                **0.34, not 0.72.** At 0.72 the ramp read as a solid block with a thin
+                fade along the bottom edge: the gridlines, the Breakeven markers and the
+                dashed Forward all disappeared behind it, and the eye saw two coloured
+                rectangles rather than one curve. The fill is background - it says which
+                side of the axis you are on and roughly how far - so it belongs under the
+                ink, not over it. Both ends share `stopColor` so the fade runs to
+                transparent *green* rather than through grey, which is what a bare
+                `transparent` stop would do in some engines. */}
             <linearGradient id={`${ids}-gain`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stopColor="var(--gain)" stopOpacity={0.72} />
-              <stop offset="1" stopColor="var(--gain)" stopOpacity={0.04} />
+              <stop offset="0" stopColor="var(--gain)" stopOpacity={0.34} />
+              <stop offset="1" stopColor="var(--gain)" stopOpacity={0} />
             </linearGradient>
             <linearGradient id={`${ids}-loss`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stopColor="var(--loss)" stopOpacity={0.04} />
-              <stop offset="1" stopColor="var(--loss)" stopOpacity={0.72} />
+              <stop offset="0" stopColor="var(--loss)" stopOpacity={0} />
+              <stop offset="1" stopColor="var(--loss)" stopOpacity={0.34} />
             </linearGradient>
           </defs>
 
