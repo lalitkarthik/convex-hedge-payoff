@@ -60,6 +60,36 @@ export function zoom(full: Span, current: Span, factor: number, focus: number): 
 }
 
 /**
+ * A held window, put back inside the data.
+ *
+ * `zoom` already keeps its result inside the full extent, so for a long time nothing
+ * needed this: the extent was a constant +/-6% of the Forward, and a window that started
+ * inside it stayed inside it. The engine now sizes the curve to the Strategy, so the
+ * extent moves when the Legs do - drop the wings off an iron butterfly and the data that
+ * reached 27,438 stops at 26,732, with the trader's window still out at 27,000.
+ *
+ * The window is **slid, not truncated**, for the same reason `zoom` slides: the width is
+ * the zoom level the trader chose, and narrowing it here would zoom them out by an amount
+ * they never asked for. Only a window wider than the data itself is narrowed, and then to
+ * exactly the data.
+ *
+ * Deliberately not called from `zoom`, which already holds this property for its own
+ * output. This is for a window that was correct when it was stored and stopped being so
+ * because the curve underneath it changed.
+ */
+export function contain(full: Span, current: Span): Span {
+  const fullWidth = full.max - full.min;
+  if (fullWidth <= 0) return full;
+
+  const width = Math.min(current.max - current.min, fullWidth);
+  let min = current.min;
+  if (min < full.min) min = full.min;
+  if (min + width > full.max) min = full.max - width;
+
+  return { min, max: min + width };
+}
+
+/**
  * The vertical extent of whatever the window contains, with a little air.
  *
  * This is the reason zoom is worth having at all. A short straddle makes 670 points

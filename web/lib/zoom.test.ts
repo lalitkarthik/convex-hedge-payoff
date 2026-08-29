@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { fit, fullSpan, zoom, MIN_FRACTION } from "./zoom";
+import { contain, fit, fullSpan, zoom, MIN_FRACTION } from "./zoom";
 
 /**
  * The window the payoff chart is looking through.
@@ -137,5 +137,37 @@ describe("fit keeps zero", () => {
   test("a window entirely under water still reaches up to zero", () => {
     const loss = PROFIT.map((p) => ({ ...p, pnl: -p.pnl }));
     expect(fit(loss, { min: 24900, max: 25300 }).max).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("contain", () => {
+  // Reachable only since the engine started sizing the window to the Strategy: `full`
+  // used to be a constant +/-6%, so a held window was inside it by construction. Now a
+  // window held on an iron butterfly whose wings reach 27,438 survives the removal of
+  // both wings, and the data behind it stops at 26,732.
+  test("slides a held window back inside a full extent that shrank underneath it", () => {
+    const full = { min: 23706, max: 26732 };
+    const held = { min: 26900, max: 27438 };
+
+    const inside = contain(full, held);
+
+    expect(inside.max).toBeLessThanOrEqual(full.max);
+    expect(inside.min).toBeGreaterThanOrEqual(full.min);
+    // Slid, not truncated: the trader's zoom level is what they chose, and shrinking it
+    // as well would zoom them out by an amount they never asked for.
+    expect(inside.max - inside.min).toBeCloseTo(held.max - held.min, 6);
+  });
+
+  test("gives back a window that already fits, unchanged", () => {
+    const full = { min: 23000, max: 27000 };
+    const held = { min: 25000, max: 25500 };
+
+    expect(contain(full, held)).toEqual(held);
+  });
+
+  test("cannot return a window wider than the data", () => {
+    const full = { min: 24000, max: 25000 };
+
+    expect(contain(full, { min: 20000, max: 30000 })).toEqual(full);
   });
 });

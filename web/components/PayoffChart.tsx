@@ -15,7 +15,7 @@ import {
 import type { Curve } from "@/lib/types";
 import { level, price } from "@/lib/format";
 import { split } from "@/lib/curve";
-import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
+import { contain, fit, fullSpan, zoom, type Span } from "@/lib/zoom";
 
 /**
  * **P&L at expiry** — not "payoff". `CONTEXT.md` is explicit that both lines a trader
@@ -99,7 +99,9 @@ function PayoffChart({
   // chart that was never zoomed keeps following the data rather than freezing on the
   // extent it had when the first Leg was added.
   const [held, setHeld] = useState<Span | null>(null);
-  const span = held ?? full;
+  // Contained rather than used as held: the extent now depends on the Strategy, so a
+  // window held across an edit that narrowed the curve would hang off the end of the data.
+  const span = useMemo(() => (held === null ? full : contain(full, held)), [held, full]);
 
   const vertical = useMemo(() => fit(points, span), [points, span]);
 
