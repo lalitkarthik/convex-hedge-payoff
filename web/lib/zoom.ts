@@ -66,10 +66,17 @@ export function zoom(full: Span, current: Span, factor: number, focus: number): 
  * across an x-axis 3,000 points wide, so at full extent it is very nearly a flat line;
  * zooming in without refitting the vertical axis shows the same flat line, larger.
  *
- * Zero is not forced into the span. Keeping it would be defensible - it is where the
- * `ReferenceLine` sits - but it also means a window entirely above water still has to
- * reach down to zero, and that is the case where a trader has zoomed in precisely
- * because they want to see the shape of the profit.
+ * **Zero is always in the span**, and this is not a presentation choice - it is what
+ * keeps the fill the right colour. A Recharts `Area` draws from the curve to its
+ * baseline, and the baseline is zero *only while zero is inside the domain*; outside it,
+ * the baseline clamps to the nearest edge. That silently changes the filled shape, and
+ * `waterline` measures against exactly that shape, so a window that excluded zero would
+ * paint the boundary against a box which no longer exists.
+ *
+ * It costs something real: zoom into a region entirely in profit and the axis still has
+ * to reach down to zero, so the vertical zoom is weaker than it could be. That is the
+ * right trade for a payoff chart, where zero is the line every figure on the screen is
+ * quoted against, and it keeps the `y=0` reference line on screen where it belongs.
  */
 export function fit(points: { forward: number; pnl: number }[], span: Span): Span {
   const inside = points.filter((p) => p.forward >= span.min && p.forward <= span.max);
@@ -78,8 +85,9 @@ export function fit(points: { forward: number; pnl: number }[], span: Span): Spa
   const values = (inside.length > 0 ? inside : points).map((p) => p.pnl);
   if (values.length === 0) return { min: -1, max: 1 };
 
-  const low = Math.min(...values);
-  const high = Math.max(...values);
+  // Zero folded in - see above. Both the baseline and the colour boundary depend on it.
+  const low = Math.min(...values, 0);
+  const high = Math.max(...values, 0);
   // A flat curve has no height to take a percentage of, so the pad has a floor.
   const pad = Math.max((high - low) * 0.08, 1);
 

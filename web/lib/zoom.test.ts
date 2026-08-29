@@ -169,3 +169,24 @@ describe("waterline", () => {
     expect(waterline([])).toBe(0.5);
   });
 });
+
+describe("fit keeps zero", () => {
+  const PROFIT = [
+    { forward: 25000, pnl: 400 },
+    { forward: 25200, pnl: 670 },
+  ];
+
+  test("a window entirely in profit still reaches down to zero", () => {
+    // Not cosmetic. A Recharts `Area` draws from the curve to its baseline, and the
+    // baseline is zero only while zero is inside the domain - outside it, it clamps to
+    // the nearest edge, which changes the filled shape. `waterline` measures against
+    // that shape, so a domain without zero paints the boundary against a box that does
+    // not exist, and the fill comes out the wrong colour.
+    expect(fit(PROFIT, { min: 24900, max: 25300 }).min).toBeLessThanOrEqual(0);
+  });
+
+  test("a window entirely under water still reaches up to zero", () => {
+    const loss = PROFIT.map((p) => ({ ...p, pnl: -p.pnl }));
+    expect(fit(loss, { min: 24900, max: 25300 }).max).toBeGreaterThanOrEqual(0);
+  });
+});

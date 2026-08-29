@@ -510,6 +510,39 @@ describe("the payoff chart", () => {
     expect(first).toBeCloseTo(670.75 / (670.75 + 861.51), 4);
   });
 
+  it("moves the colour boundary when the Strategy changes", async () => {
+    // The assertion that was missing, and the reason a fix that was arithmetically
+    // correct still looked broken. `fill="url(#id)"` is a reference, and browsers do not
+    // reliably repaint the referencing element when only the gradient's offsets change -
+    // so the first render was right and every drag after it kept the previous curve's
+    // boundary. Asserting the offset on a freshly loaded page could never see that.
+    const offset = async () =>
+      Number(
+        await page
+          .locator("svg.recharts-surface linearGradient stop")
+          .first()
+          .getAttribute("offset"),
+      );
+
+    const before = await offset();
+
+    // Move a Leg, which changes the curve's extremes and so the waterline.
+    const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
+    await slider.focus();
+    for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
+    await page.waitForFunction(() => !window.location.search.includes("25200CE"));
+
+    // The rendered offset has to follow the new curve, not the one it was drawn with.
+    await page.waitForFunction(
+      (was) => {
+        const stop = document.querySelector("svg.recharts-surface linearGradient stop");
+        return stop !== null && Number(stop.getAttribute("offset")) !== was;
+      },
+      before,
+    );
+    expect(await offset()).not.toBe(before);
+  });
+
   it("keeps the colour boundary where it is when the axis refits", async () => {
     // Zooming rescales the shape, and a linear rescale does not move a fraction of the
     // shape's own height - so the waterline must not drift. It would if the offset were
