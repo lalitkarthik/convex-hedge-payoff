@@ -4,17 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import GreeksTable from "./GreeksTable";
 import Header from "./Header";
-import LegsStrip from "./LegsStrip";
+import LegEditor from "./LegEditor";
 import MetricsPanel from "./MetricsPanel";
 import PayoffChart from "./PayoffChart";
 import PayoffTable from "./PayoffTable";
-import StrikeSlider from "./StrikeSlider";
 
 import { ApiError, postAnalysis } from "@/lib/api";
 import { answered, dueAt, edit, failed, start } from "@/lib/analysing";
 import { istClock } from "@/lib/format";
 import { strategyHref, type View } from "@/lib/strategy-url";
-import { legalStrikes, moveLeg } from "@/lib/strikes";
 import type {
   AnalysisResponse,
   ChainResponse,
@@ -54,6 +52,10 @@ import type {
  * A fresh URL - a pasted link, or the back button - remounts this component, because
  * `page.tsx` keys it on the encoded Legs. So the server's answer wins whenever the server
  * is the one that spoke last, and no reconciliation is needed between the two.
+ *
+ * The Strategy itself is edited in `LegEditor`, which is where the Chain fetched by this
+ * page is actually spent: a ladder per Leg to drag along, and a price to re-read whenever
+ * a Leg lands somewhere new.
  */
 
 type Tab = "pnl" | "greeks" | "table";
@@ -88,12 +90,6 @@ export default function AnalyseScreen({
 
   // The server's render is question zero, already answered. Everything after it is ours.
   const [state, setState] = useState(() => start(legs, analysis));
-
-  // Clamped rather than trusted: the Strategy can lose a Leg between renders, and an
-  // index left pointing past the end would read `undefined.strike`.
-  const [picked, setPicked] = useState(0);
-  const selected = Math.min(picked, Math.max(0, state.legs.length - 1));
-  const leg = state.legs[selected];
 
   const sentAt = useRef(-Infinity);
 
@@ -225,25 +221,7 @@ export default function AnalyseScreen({
           <h2>
             Strategy — {state.legs.length} {state.legs.length === 1 ? "Leg" : "Legs"}
           </h2>
-          <LegsStrip legs={state.legs} readOnly selected={selected} onSelect={setPicked} />
-
-          {leg && (
-            <>
-              <h2>Strike</h2>
-              <StrikeSlider
-                strikes={legalStrikes(chain.rows, leg.option_type)}
-                strike={leg.strike}
-                optionType={leg.option_type}
-                onCommit={(strike) => apply(moveLeg(state.legs, selected, { strike }, chain.rows))}
-              />
-              {state.legs.length > 1 && (
-                <p className="note">
-                  Moving the {state.legs.length === 2 ? "other" : "another"} Leg? Pick its row
-                  above.
-                </p>
-              )}
-            </>
-          )}
+          <LegEditor legs={state.legs} chain={chain} onChange={apply} />
           {/* Spot is still here, and deliberately (#72). It stopped being the axis; it
               did not stop being observed, and it is the one figure on this line that is
               measured rather than fitted. */}

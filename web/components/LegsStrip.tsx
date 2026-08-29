@@ -15,31 +15,20 @@ import { strike as fmtStrike } from "@/lib/format";
  * Direction is separate from Quantity (`CONTEXT.md`): sold two is direction −1 and
  * quantity 2, never quantity −2. The two encodings draw the same curve today and
  * disagree the first time anything sums or displays Quantity.
+ *
+ * **This is the Chain's list.** Analyse used to render it too, read-only and with a
+ * selection highlight pointing at a single shared strike slider; it has `LegEditor` now,
+ * which gives every Leg its own slider and its own toggles. The `readOnly`, `selected`
+ * and `onSelect` props left with it - the Chain never passed any of them.
  */
 export default function LegsStrip({
   legs,
   onChange,
   onRemove,
-  readOnly = false,
-  selected,
-  onSelect,
 }: {
   legs: LegRequest[];
   onChange?: (index: number, leg: LegRequest) => void;
   onRemove?: (index: number) => void;
-  /** Direction, Quantity and Entry Premium are not edited on the Analyse page.
-      The strike now is, through `StrikeSlider` - and the objection this flag used to
-      carry, that the quote a Leg is priced against lives on the Chain, is answered
-      rather than waived: Analyse fetches the Chain, the slider offers only strikes it
-      actually quotes, and moving one drops the Entry Premium so the engine reprices
-      against the quote at the new strike. What is still refused here is editing a
-      price by hand, away from any quote at all. */
-  readOnly?: boolean;
-  /** Which Leg the strike slider is pointed at. Interface state, deliberately not in
-      the URL: #32 puts the *Strategy* in the address bar, and which row is highlighted
-      is not part of the Strategy - a shared link would otherwise carry it. */
-  selected?: number;
-  onSelect?: (index: number) => void;
 }) {
   if (legs.length === 0) {
     return (
@@ -52,23 +41,16 @@ export default function LegsStrip({
   return (
     <div className="legs">
       {legs.map((leg, index) => (
-        <div
-          className={`leg ${onSelect && selected === index ? "selected" : ""}`}
-          key={`${leg.strike}${leg.option_type}${index}`}
-          // The row is the target rather than a separate radio: it is already the thing
-          // that names the Leg, and a second control beside it would say there are two.
-          onClick={onSelect ? () => onSelect(index) : undefined}
-        >
+        <div className="leg" key={`${leg.strike}${leg.option_type}${index}`}>
           <button
             className={`dir ${leg.direction === 1 ? "b" : "s"}`}
             title="Flip between bought and sold"
-            disabled={readOnly}
             onClick={() => onChange?.(index, { ...leg, direction: leg.direction === 1 ? -1 : 1 })}
           >
             {leg.direction === 1 ? "B" : "S"}
           </button>
 
-          <span className={onSelect ? "leg-pick" : undefined}>
+          <span>
             {fmtStrike(leg.strike)} {leg.option_type}
           </span>
 
@@ -78,42 +60,36 @@ export default function LegsStrip({
             step={1}
             value={leg.quantity ?? 1}
             aria-label="quantity"
-            readOnly={readOnly}
             onChange={(event) =>
               onChange?.(index, { ...leg, quantity: Math.max(1, Number(event.target.value) || 1) })
             }
           />
 
           {/*
-            Blank, not zero, when the Leg carries no Entry Premium. Absent means "price
-            it at the Chain's last traded price", and until the strike slider existed
-            every Leg reached this component with a premium already on it, so the `?? 0`
-            this replaces never fired. It fires now on any Leg that has been moved - and
-            a 0 in this box says the trader entered the position for nothing, which is
-            the same false reading `legs-url.ts` refuses to write into the URL.
+            Blank, not zero, when the Leg carries no Entry Premium. Absent means "price it
+            at the Chain's last traded price", and a 0 in this box would say the trader
+            entered the position for nothing - the same false reading `legs-url.ts`
+            refuses to write into the URL. Every Leg picked off the Chain carries a price,
+            so this is the rare branch.
           */}
           <input
             type="number"
             step={0.05}
             value={leg.entry_premium ?? ""}
-            placeholder="chain"
             title={
               leg.entry_premium === undefined || leg.entry_premium === null
                 ? "Priced at the Chain's last traded price for this strike"
                 : "Entry Premium"
             }
             aria-label="entry premium"
-            readOnly={readOnly}
             onChange={(event) =>
               onChange?.(index, { ...leg, entry_premium: Number(event.target.value) })
             }
           />
 
-          {!readOnly && (
-            <button className="drop" onClick={() => onRemove?.(index)} aria-label="remove leg">
-              ×
-            </button>
-          )}
+          <button className="drop" onClick={() => onRemove?.(index)} aria-label="remove leg">
+            ×
+          </button>
         </div>
       ))}
     </div>

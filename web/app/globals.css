@@ -573,18 +573,105 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
 .strike-slider input[type="range"] { flex: 1; accent-color: var(--accent); }
 .strike-slider .strike-now { min-width: 92px; text-align: right; }
 
-/* A Leg row can be picked when the slider is on screen. The cursor and the hover are
-   what say so before anything is clicked. */
-.leg-pick { cursor: pointer; }
-.legs .leg:hover .leg-pick { color: var(--accent); }
+/* ---------------------------------------------------------- the Leg editor */
 
-/* The selected row. An accent rule on the leading edge rather than a fill: the row
-   already carries a coloured B/S pill and a filled background would fight it. */
-.leg.selected {
-  border-color: var(--accent);
-  box-shadow: inset 2px 0 0 var(--accent);
+/*
+ * One card per Leg on Analyse: controls on a row, the strike slider full width beneath.
+ * Stacked rather than inline because the panel is 380px and a slider squeezed in beside
+ * five other controls is about 90px - roughly one pixel per strike on a 68-rung ladder,
+ * which is a control you can only operate with the arrow buttons.
+ */
+.leg-editor { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+
+.leg-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px;
 }
 
-/* A Leg with no Entry Premium is priced from the Chain. The box says so rather than
-   showing a 0, which would read as "entered for nothing". */
-.leg input::placeholder { color: var(--ink-faint); font-style: italic; opacity: 1; }
+.leg-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.leg-card .leg-name {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.leg-card input {
+  width: 62px;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--ink);
+  padding: 2px 4px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+}
+.leg-card input[aria-label="quantity"] { width: 40px; }
+
+.leg-card .drop {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.leg-card .drop:hover { color: var(--put); }
+
+/* The slider sits under the row and fills the card, which is the point of stacking. */
+.leg-card .strike-slider { margin-bottom: 0; }
+
+/*
+ * Both halves of a binary, always visible, with the live one filled. A single button
+ * reading "B" needs a tooltip to say what clicking it does; showing "B S" says it.
+ */
+.toggle { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 3px; overflow: hidden; }
+
+.toggle-half {
+  border: 0;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 6px;
+  height: 20px;
+  cursor: pointer;
+}
+.toggle-half + .toggle-half { border-left: 1px solid var(--line-strong); }
+.toggle-half:hover:not(:disabled) { background: var(--bg); color: var(--ink); }
+
+/* Lit halves borrow the Chain's own colours: calls blue, puts red, bought blue, sold
+   red - so a Leg's card and its row in the table say the same thing the same way. */
+.toggle-half.on { color: var(--on-accent); cursor: default; }
+.toggle-half.t-b.on, .toggle-half.t-ce.on { background: var(--call); }
+.toggle-half.t-s.on, .toggle-half.t-pe.on { background: var(--put); }
+
+/* A side this minute does not quote at all. Disabled and explained, never silent. */
+.toggle-half:disabled:not(.on) { opacity: 0.35; cursor: not-allowed; }
+
+.add-leg {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink-soft);
+  padding: 6px;
+  width: 100%;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.add-leg:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.add-leg:disabled { opacity: 0.35; cursor: default; }
