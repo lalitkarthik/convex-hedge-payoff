@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import GreeksTable from "./GreeksTable";
 import Header from "./Header";
@@ -10,7 +10,7 @@ import PayoffChart from "./PayoffChart";
 import PayoffTable from "./PayoffTable";
 
 import { ApiError, postAnalysis } from "@/lib/api";
-import { answered, dueAt, edit, failed, start } from "@/lib/analysing";
+import { answered, asking, edit, failed, shouldAsk, start } from "@/lib/analysing";
 import { istClock } from "@/lib/format";
 import { strategyHref, type View } from "@/lib/strategy-url";
 import type {
@@ -60,21 +60,6 @@ import type {
 
 type Tab = "pnl" | "greeks" | "table";
 
-/**
- * How often a drag is allowed to ask the engine, in milliseconds.
- *
- * Measured rather than guessed. `/analyse` answers this Strategy in ~5ms direct; through
- * the same-origin rewrite it is ~10-20ms against `next start` and ~200ms against
- * `next dev`, so the number a developer sees while working on this file is an order of
- * magnitude worse than the one a trader gets, and tuning against it would be tuning
- * against the dev server.
- *
- * 120 holds a continuous drag to eight questions a second, which is well inside what the
- * engine answers and fast enough that the curve tracks the thumb. Overlap is harmless in
- * any case: a late answer is discarded rather than rendered.
- */
-const ASK_EVERY_MS = 120;
-
 export default function AnalyseScreen({
   session,
   summary,
@@ -95,8 +80,6 @@ export default function AnalyseScreen({
   // The server's render is question zero, already answered. Everything after it is ours.
   const [state, setState] = useState(() => start(legs, analysis));
 
-  const sentAt = useRef(-Infinity);
-
   const apply = useCallback(
     (next: LegRequest[]) => {
       setState((current) => edit(current, next));
@@ -107,34 +90,37 @@ export default function AnalyseScreen({
     [view],
   );
 
-  const { issued, legs: asked } = state;
-
+  /*
+   * Ask, whenever there is something to ask and nothing already in flight.
+   *
+   * There is no timer here and that is the point. This was a 120ms throttle, which held a
+   * drag to eight updates a second no matter how fast the engine answered - and it
+   * answers in about ten milliseconds. The curve moved in visible steps because of a
+   * constant, not because of the engine.
+   *
+   * The effect re-runs on every settle, so the next question goes out the instant the
+   * last answer lands. Twenty ticks of a drag arriving during one request produce exactly
+   * one more request, for wherever the thumb actually ended up.
+   */
   useEffect(() => {
-    // Question zero is the server's and has already been answered; re-asking it on mount
-    // would double every page load.
-    if (issued === 0) return;
+    if (!shouldAsk(state)) return;
 
-    const wait = Math.max(0, dueAt(Date.now(), sentAt.current, ASK_EVERY_MS) - Date.now());
-    const timer = setTimeout(() => {
-      sentAt.current = Date.now();
-      postAnalysis({ moment: view.moment, legs: asked })
-        .then((next) => setState((current) => answered(current, issued, next)))
-        .catch((error) =>
-          setState((current) =>
-            failed(
-              current,
-              issued,
-              error instanceof ApiError && error.detail ? error.detail : String(error),
-            ),
+    const seq = state.issued;
+    const legs = state.legs;
+    setState((current) => asking(current, seq));
+
+    postAnalysis({ moment: view.moment, legs })
+      .then((next) => setState((current) => answered(current, seq, next)))
+      .catch((error) =>
+        setState((current) =>
+          failed(
+            current,
+            seq,
+            error instanceof ApiError && error.detail ? error.detail : String(error),
           ),
-        );
-    }, wait);
-
-    // A newer edit cancels the pending one. The deadline is absolute, so a fast drag
-    // reschedules toward the same instant rather than pushing it away - which is what
-    // keeps a continuous gesture updating instead of waiting for it to stop.
-    return () => clearTimeout(timer);
-  }, [issued, asked, view.moment]);
+        ),
+      );
+  }, [state, view.moment]);
 
   const current = state.analysis;
 

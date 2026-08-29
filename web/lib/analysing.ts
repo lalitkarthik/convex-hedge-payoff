@@ -23,15 +23,21 @@ export interface Analysing {
   legs: LegRequest[];
   /** The last answer the engine gave. Never cleared - see `edit`. */
   analysis: AnalysisResponse;
-  /** Which question is outstanding. Answers are matched against it and nothing else. */
+  /** The newest question. Bumped by every edit, whether or not it has been asked yet. */
   issued: number;
+  /** The question currently in flight, or null. At most one, ever - see `shouldAsk`. */
+  asked: number | null;
+  /** The newest question that has come back, answered or refused. */
+  settled: number;
   /** The engine's refusal, if the newest question got one. */
   problem: string | null;
 }
 
 /** The server's render, as the starting position. */
 export function start(legs: LegRequest[], analysis: AnalysisResponse): Analysing {
-  return { legs, analysis, issued: 0, problem: null };
+  // Question zero arrived with the page, already answered. `settled` says so, which is
+  // what stops the first render asking the server what it just told us.
+  return { legs, analysis, issued: 0, asked: null, settled: 0, problem: null };
 }
 
 /**
@@ -56,8 +62,8 @@ export function edit(state: Analysing, legs: LegRequest[]): Analysing {
  * would have has already arrived and been overwritten.
  */
 export function answered(state: Analysing, seq: number, analysis: AnalysisResponse): Analysing {
-  if (seq !== state.issued) return state;
-  return { ...state, analysis, problem: null };
+  if (seq !== state.asked) return state;
+  return { ...state, analysis, problem: null, asked: null, settled: seq };
 }
 
 /**
@@ -72,18 +78,44 @@ export function answered(state: Analysing, seq: number, analysis: AnalysisRespon
  * already correct has done nothing wrong.
  */
 export function failed(state: Analysing, seq: number, problem: string): Analysing {
-  if (seq !== state.issued) return state;
-  return { ...state, problem };
+  if (seq !== state.asked) return state;
+  // Settled, not merely cleared. A refusal that left the question outstanding would be
+  // re-asked immediately and forever, as fast as the refusals came back.
+  return { ...state, problem, asked: null, settled: seq };
 }
 
 /**
- * When the next request may go out: now, or the end of the current window.
+ * Whether there is a question to ask right now.
  *
- * Leading edge, so the first tick of a drag is not preceded by a wait. Deferred rather
- * than dropped inside the window, which is the half that is easy to get wrong: the
- * position a drag *ends* on almost always falls inside the window, and a throttle that
- * dropped it would leave the screen showing the second-to-last strike permanently.
+ * **One in flight at a time, and no clock.** This replaced a 120ms throttle, which held a
+ * drag to eight updates a second however fast the engine answered - and it answers in
+ * about ten milliseconds through the rewrite, so the constant was capping a fast thing to
+ * a guess made while the backend was not running.
+ *
+ * Asking again the moment the last answer lands has no constant in it. It runs at
+ * whatever rate the engine sustains, slows down by itself if the engine slows down, and
+ * cannot pile requests up - which is the thing the throttle was really for. Twenty ticks
+ * of a drag landing during one request produce exactly one more request, for wherever the
+ * thumb actually ended up, because only `issued` moved and it is read once.
+ *
+ * It also demotes out-of-order answers from a handled case to an impossible one: there is
+ * never more than one outstanding. `answered` still checks, because a guarantee that
+ * costs one comparison is worth keeping when the cost of losing it is a curve that
+ * silently describes the wrong Strategy.
  */
-export function dueAt(now: number, lastSent: number, interval: number): number {
-  return Math.max(now, lastSent + interval);
+export function shouldAsk(state: Analysing): boolean {
+  return state.asked === null && state.issued !== state.settled;
+}
+
+/**
+ * Mark a question as the one in flight.
+ *
+ * The sequence is passed in rather than read off `state.issued`, and that is not
+ * ceremony. The caller has already captured which Legs it is about to send; if an edit
+ * landed in between, reading `issued` here would record a question number the outgoing
+ * request does not carry - so its answer would be discarded as stale, `asked` would never
+ * clear, and `shouldAsk` would be false forever. A frozen chart with no error anywhere.
+ */
+export function asking(state: Analysing, seq: number): Analysing {
+  return { ...state, asked: seq };
 }

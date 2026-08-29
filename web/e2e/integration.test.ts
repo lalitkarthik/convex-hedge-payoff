@@ -428,6 +428,64 @@ describe("the Leg editor", () => {
   });
 });
 
+describe("the payoff chart", () => {
+  it("opens on the whole curve and zooms into it", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    // The curve is 400 points across the Forward +/-6%, so it opens on about 3,000 points
+    // of index either side of 25,219.
+    const range = page.locator(".chart-range");
+    const width = async () => {
+      const [lo, hi] = (await range.innerText()).split("–").map((s) => Number(s.replace(/[^\d.]/g, "")));
+      return hi! - lo!;
+    };
+
+    const opened = await width();
+    expect(opened).toBeGreaterThan(2000);
+
+    await page.getByRole("button", { name: "zoom in" }).click();
+    expect(await width()).toBeLessThan(opened);
+  });
+
+  it("refits the vertical axis to what is visible", async () => {
+    // The reason zoom is worth having. A short straddle makes 670 points across an axis
+    // 3,000 wide, so at full extent it is nearly a flat line - zooming without refitting
+    // the y-axis would show the same flat line, larger.
+    const ticks = async () =>
+      (await page.locator(".recharts-yAxis .recharts-cartesian-axis-tick-value").allInnerTexts())
+        .map((t) => Number(t.replace(/[^\d.-]/g, "")))
+        .filter((n) => Number.isFinite(n));
+
+    const before = await ticks();
+    for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "zoom in" }).click();
+    const after = await ticks();
+
+    const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
+    expect(spread(after)).toBeLessThan(spread(before));
+  });
+
+  it("goes back to the whole curve, and only offers to when zoomed", async () => {
+    const reset = page.getByRole("button", { name: "reset zoom" });
+    expect(await reset.isDisabled()).toBe(false);
+
+    await reset.click();
+    expect(await reset.isDisabled()).toBe(true);
+  });
+
+  it("leaves room for the forward label rather than clipping it", async () => {
+    // The label sits above the plot area, and an 8px top margin cut it in half. It is
+    // rendered inside the SVG, so this asserts it is actually within the frame.
+    const label = page.locator("svg.recharts-surface text", { hasText: "forward" }).first();
+    const box = (await label.boundingBox())!;
+    const chart = (await page.locator("svg.recharts-surface").boundingBox())!;
+
+    expect(box.y).toBeGreaterThanOrEqual(chart.y);
+  });
+});
+
 describe("the theme", () => {
   it("wears the dark palette when the machine asks for one", async () => {
     // The palette is 18 custom properties on `:root`, and every component but the chart

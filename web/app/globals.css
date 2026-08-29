@@ -161,6 +161,11 @@ html, body {
   grid-template-columns: minmax(0, 1fr) 420px;
   gap: 0;
   overflow: hidden;
+  /* A grid item's default `min-height: auto` lets it grow to fit its content, so the
+     `1fr` row silently became "as tall as the chart" and the panes below never got a
+     scrollbar - the shell's `overflow: hidden` just cut the bottom off instead. This is
+     the line that makes `overflow-y: auto` on the two panes mean anything. */
+  min-height: 0;
 }
 
 @media (max-width: 1100px) {
@@ -171,10 +176,11 @@ html, body {
   background: var(--surface);
   border-left: 1px solid var(--line);
   overflow-y: auto;
+  min-height: 0;
   padding: var(--pad);
 }
 
-.main { overflow-y: auto; }
+.main { overflow-y: auto; min-height: 0; }
 
 /* --------------------------------------------------------------- header */
 
@@ -526,6 +532,31 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
 .back:hover { border-color: var(--accent); color: var(--accent); }
 
 .analyse-main { padding: var(--pad); }
+
+/* ------------------------------------------------------------ payoff chart */
+
+.chart { display: flex; flex-direction: column; gap: 4px; }
+
+/* The zoom controls, above the plot and out of the way of the axis labels. The range
+   is spelled out because at 5% of full extent the axis ticks alone do not make it
+   obvious how far in you are. */
+.chart-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.chart-range {
+  margin-right: auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.chart-reset { font-size: 11px; }
+
+/* The wheel target, and exactly the plot's width - the focus maths reads its box. */
+.chart-plot { width: 100%; }
 .analyse-body { grid-template-columns: minmax(0, 1fr) 380px; }
 
 /* A link that names a Strategy nobody can read. Rendered instead of a chart, never
