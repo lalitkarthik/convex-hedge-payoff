@@ -454,15 +454,25 @@ describe("the payoff chart", () => {
     // The reason zoom is worth having. A short straddle makes 670 points across an axis
     // 3,000 wide, so at full extent it is nearly a flat line - zooming without refitting
     // the y-axis would show the same flat line, larger.
+    // `allTextContents`, not `allInnerTexts`: these ticks are SVG `<text>` nodes, and SVG
+    // elements have no `innerText` at all - so the inner-text form hands back a row of
+    // undefineds rather than an empty list, and fails as a TypeError inside the map
+    // instead of as a missing element.
     const ticks = async () =>
-      (await page.locator(".recharts-yAxis .recharts-cartesian-axis-tick-value").allInnerTexts())
-        .map((t) => Number(t.replace(/[^\d.-]/g, "")))
+      (await page.locator(".recharts-yAxis .recharts-cartesian-axis-tick-value").allTextContents())
+        .map((t) => Number((t ?? "").replace(/[^\d.-]/g, "")))
         .filter((n) => Number.isFinite(n));
 
     const before = await ticks();
+    expect(before.length).toBeGreaterThan(1);
+
     for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "zoom in" }).click();
     const after = await ticks();
+    expect(after.length).toBeGreaterThan(1);
 
+    // An axis that did not refit would read the same numbers back, so this fails loudly
+    // rather than trivially passing on an empty list - which is what the length checks
+    // above are for.
     const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
     expect(spread(after)).toBeLessThan(spread(before));
   });
