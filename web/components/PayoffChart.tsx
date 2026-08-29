@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState, type WheelEvent } from "react";
+import { memo, useId, useMemo, useState, type WheelEvent } from "react";
 import {
   Area,
   ComposedChart,
@@ -68,7 +68,7 @@ import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
  * a Breakeven is dragging a strike to watch that Breakeven move, and snapping back to
  * full extent on the first tick would undo the thing they zoomed in to see.
  */
-export default function PayoffChart({
+function PayoffChart({
   curve,
   forward,
   breakevens,
@@ -294,3 +294,21 @@ export default function PayoffChart({
     </div>
   );
 }
+
+/**
+ * **Memoised, because it is the only expensive thing on the page.**
+ *
+ * Dragging a strike sets state on every tick, and every tick re-rendered this: four
+ * hundred points through Recharts, two Areas, a Line and up to four reference lines, all
+ * to produce the picture that was already on screen. The answer for the new strike has
+ * not arrived yet at that moment - that is the whole design, the last good curve stays up
+ * while the request is in flight - so the work was not merely expensive, it was known in
+ * advance to change nothing.
+ *
+ * What makes this safe rather than a guess is that all three props come straight off
+ * `state.analysis` and are replaced together when an answer lands: `curve` and
+ * `breakevens` are held by that object, not rebuilt on the way in. A `.map()` or a
+ * `[...spread]` at either call site would produce a new array every render, memo would
+ * never skip, and the only symptom would be that this comment had become false.
+ */
+export default memo(PayoffChart);
