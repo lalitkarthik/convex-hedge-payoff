@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 
 import type { ChainResponse, ChainRow, ChainQuote, Direction, OptionType } from "@/lib/types";
 import { count, greek, price, strike as fmtStrike, volatility } from "@/lib/format";
+import { inTheMoney } from "@/lib/moneyness";
 
 /**
  * Calls left, puts right, strikes down the middle, **one shared IV column**.
@@ -23,6 +24,13 @@ import { count, greek, price, strike as fmtStrike, volatility } from "@/lib/form
  *    hour are dimmed; #31 owns the real threshold.
  *  - **The starred strike is nearest the Forward**, not nearest spot — 25,200 against
  *    25,100 at the anchor.
+ *
+ * The in-the-money half carries a red wash, and it is a claim about the **price** rather
+ * than about the position: the model reproduces `last` on 100% of out-of-the-money rows
+ * and on 6.2% of in-the-money ones, so the shaded side is the side whose print is least
+ * likely to still be live. It is a wash and not a veil — every figure stays at full
+ * contrast. Measured against the Forward, by the rule the star already follows
+ * (`lib/moneyness.ts`).
  */
 
 const STALE_MINUTES = 60;
@@ -31,11 +39,13 @@ function QuoteCells({
   quote,
   side,
   strike,
+  forward,
   onPick,
 }: {
   quote: ChainQuote | null;
   side: OptionType;
   strike: number;
+  forward: number;
   onPick: (strike: number, optionType: OptionType, direction: Direction) => void;
 }) {
   if (!quote) {
@@ -51,8 +61,12 @@ function QuoteCells({
   }
 
   const stale = quote.age_minutes >= STALE_MINUTES ? "stale" : "";
+  // Computed after the blank-side return above, and deliberately: an unquoted side is
+  // left unwashed, because there is no contract there and shading an absence would be
+  // making a claim about a price that was never printed.
+  const itm = inTheMoney(strike, forward, side) ? "itm" : "";
   const buttons = (
-    <td>
+    <td className={itm}>
       <span className="bs">
         <button className="buy" onClick={() => onPick(strike, side, 1)} title="Buy">
           B
@@ -65,10 +79,10 @@ function QuoteCells({
   );
 
   const cells = [
-    <td key="oi" className={`num ${stale}`}>{count(quote.open_interest)}</td>,
-    <td key="vol" className={`num ${stale}`}>{count(quote.volume)}</td>,
-    <td key="d" className={`num ${stale}`}>{quote.delta === null ? "" : greek("delta", quote.delta)}</td>,
-    <td key="ltp" className={`num ${stale}`}>
+    <td key="oi" className={`num ${stale} ${itm}`}>{count(quote.open_interest)}</td>,
+    <td key="vol" className={`num ${stale} ${itm}`}>{count(quote.volume)}</td>,
+    <td key="d" className={`num ${stale} ${itm}`}>{quote.delta === null ? "" : greek("delta", quote.delta)}</td>,
+    <td key="ltp" className={`num ${stale} ${itm}`}>
       {price(quote.last)}
       {quote.age_minutes > 0 && <span className="age"> {quote.age_minutes}m</span>}
     </td>,
@@ -154,13 +168,25 @@ export default function ChainTable({
               ref={row.strike === atTheMoney ? money : undefined}
               className={row.strike === atTheMoney ? "at-the-money" : ""}
             >
-              <QuoteCells quote={row.call} side="CE" strike={row.strike} onPick={onPick} />
+              <QuoteCells
+                quote={row.call}
+                side="CE"
+                strike={row.strike}
+                forward={chain.forward}
+                onPick={onPick}
+              />
               <td className="strike">
                 {fmtStrike(row.strike)}
                 {row.strike === atTheMoney && " ★"}
               </td>
               <td className="iv">{volatility(row.iv)}</td>
-              <QuoteCells quote={row.put} side="PE" strike={row.strike} onPick={onPick} />
+              <QuoteCells
+                quote={row.put}
+                side="PE"
+                strike={row.strike}
+                forward={chain.forward}
+                onPick={onPick}
+              />
             </tr>
           ))}
         </tbody>

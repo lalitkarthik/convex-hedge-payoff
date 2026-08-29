@@ -39,6 +39,9 @@
   --accent: #4338ca;
   --atm: #fff6d6;
   --atm-line: #e0b400;
+  /* The in-the-money wash. A tint rather than an alpha, so it composes predictably with
+     the hatch on a blank cell and with the row hover that overrides it. */
+  --itm: #fbeff0;
 
   /* Promoted out of the rules that used to hardcode them, because each is invisible
      or wrong when the surface underneath it changes. */
@@ -83,6 +86,7 @@
     --accent: #8b7cf6;
     --atm: #3a3016;
     --atm-line: #e0b400;
+    --itm: #241a1c;
 
     --row-hover: #1d2733;
     --hatch: #1b232d;
@@ -114,6 +118,7 @@
   --accent: #8b7cf6;
   --atm: #3a3016;
   --atm-line: #e0b400;
+  --itm: #241a1c;
 
   --row-hover: #1d2733;
   --hatch: #1b232d;
@@ -293,6 +298,16 @@ table.chain tbody td {
   padding: 3px 6px;
   border-bottom: 1px solid var(--line);
 }
+
+/*
+ * The in-the-money half, washed red.
+ *
+ * Before the hover rule on purpose: hovering a row has to win, or the pointer would
+ * stop telling you which row it is on for half the table. `.stale` is opacity and
+ * composes with this rather than competing; `td.strike` and `td.iv` are never washed,
+ * because a strike is not on one side or the other.
+ */
+table.chain tbody td.itm { background: var(--itm); }
 
 table.chain tbody tr:hover td { background: var(--row-hover); }
 
