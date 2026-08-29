@@ -496,13 +496,45 @@ def test_the_window_widens_to_hold_a_structure_whose_wings_fall_outside_it(clien
     assert all(p == pytest.approx(-1065.05, abs=0.01) for p in left), "and they are flat"
 
 
-def test_a_structure_that_fits_keeps_the_window_it_had(client):
+def test_a_structure_that_fits_keeps_the_frame_it_had(client):
     """The widening is driven by the Legs, so a Strategy inside +/-6% must not move it.
 
-    Widening unconditionally - to the whole stored domain, say, which runs to 55,900 -
-    would make every ordinary straddle a flat line across a chart eleven times too wide.
-    The default framing is the thing being preserved here, and this is the test that
-    fails if a later change makes the window a constant again.
+    Widening the *frame* unconditionally - to the whole stored domain, say, which runs to
+    55,900 - would make every ordinary straddle a flat line across a chart eleven times
+    too wide. The framing is what is preserved here, and this is the test that fails if a
+    later change makes it a constant again, or forgets that it is the Legs that move it.
+
+    Read off the **table**, which is published on this same response and is the frame: the
+    curve deliberately runs wider than what a trader opens on, so that there is somewhere
+    to zoom out to. The next test is the one that asserts that.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+        ],
+    ).json()
+    table = body["table"]["forward"]
+    forward = body["forward"]
+
+    # Snapped to the 50-point strike grid, so within one step of +/-6% on each side.
+    assert min(table) == pytest.approx(forward * 0.94, abs=50.0)
+    assert max(table) == pytest.approx(forward * 1.06, abs=50.0)
+
+
+def test_the_curve_runs_wider_than_the_frame_so_there_is_room_to_zoom_out(client):
+    """A chart whose data stops at the opening view cannot be zoomed out at all.
+
+    That was the state after the frame learned to hold the wings: the window fitted the
+    structure exactly, and both zoom-out controls were no-ops from the first frame,
+    because the browser will not draw a window wider than the data behind it - it would
+    be blank axis, and blank axis reads as a broken chart rather than as the end of the
+    data.
+
+    So the curve is sent wider than the frame. Nothing is lost by it and nothing is
+    approximated: P&L at Expiry is piecewise linear and every corner is placed exactly
+    (#70), so the extra span is described as precisely by 400 points as by 4,000.
     """
     body = analyse(
         client,
@@ -512,7 +544,30 @@ def test_a_structure_that_fits_keeps_the_window_it_had(client):
         ],
     ).json()
     points = body["curve"]["forward"]
-    forward = body["forward"]
+    table = body["table"]["forward"]
 
-    assert min(points) == pytest.approx(forward * 0.94, rel=1e-9)
-    assert max(points) == pytest.approx(forward * 1.06, rel=1e-9)
+    frame = max(table) - min(table)
+    assert max(points) - min(points) > frame * 2, "room to zoom out, not a rounding margin"
+    assert min(points) < min(table), "and on both sides"
+    assert max(points) > max(table)
+
+
+def test_the_table_covers_the_wings_the_chart_now_draws(client):
+    """One computation, two presentations - so they cannot cover two different windows.
+
+    The frame learned to hold an iron butterfly's wings and the table did not follow, so
+    the chart drew a corner at 23,500 that the table beneath it had no row for. Both read
+    the same frame now.
+    """
+    table = analyse(
+        client,
+        [
+            {"strike": 23500.0, "option_type": "PE", "direction": 1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": 26900.0, "option_type": "CE", "direction": 1},
+        ],
+    ).json()["table"]["forward"]
+
+    assert min(table) <= 23500.0, "the bought put has a row"
+    assert max(table) >= 26900.0, "and so does the bought call"

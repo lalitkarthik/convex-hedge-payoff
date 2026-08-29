@@ -77,6 +77,20 @@ Taken off the strike rather than off the Forward, so it scales with where the wi
 a Strategy far from the money is not framed by a number derived from a Forward it is
 nowhere near."""
 
+ZOOM_HEADROOM = 3.0
+"""How much wider than the frame the *curve* is sent, so that zooming out has somewhere
+to go.
+
+The frame is what a trader opens on. If the curve stopped there, both zoom-out controls
+would be no-ops from the first frame: a window wider than its data draws as blank axis,
+which reads as a broken chart rather than as the end of the data, so the browser refuses
+to go there and is right to.
+
+**This costs nothing in accuracy.** P&L at Expiry is piecewise linear and every corner is
+placed exactly (#70), so a span three times wider is described exactly as well by the same
+400 points - the grid decides how smooth the straight bits look, not whether they are
+right. It costs three times the JSON, which is why it is 3 and not 30."""
+
 
 class MixedExpiry(ValueError):
     """A Strategy whose Legs do not all expire on the same day (#71).
@@ -278,18 +292,14 @@ def curve(legs: list[Leg], forward_centre: float) -> Curve:
     edges here are still multiples of the Forward.
     """
     low, high = forward_domain()
-    left = forward_centre * (1 - FORWARD_RANGE)
-    right = forward_centre * (1 + FORWARD_RANGE)
+    framed_left, framed_right = _frame(legs, forward_centre)
 
-    # The strikes themselves, not `_corners`, which appends the domain's own two ends and
-    # would widen every window to the whole 0..55,900 the manifest publishes.
-    strikes = [leg.strike for leg in legs]
-    if strikes:
-        left = min(left, min(strikes) * (1 - WING_MARGIN))
-        right = max(right, max(strikes) * (1 + WING_MARGIN))
-
-    left = max(left, low)
-    right = min(right, high)
+    # Widened about the frame's own centre, so the frame keeps its place inside the result
+    # and a Strategy with one far wing does not get all its headroom on that side.
+    centre = (framed_left + framed_right) / 2
+    reach = (framed_right - framed_left) * ZOOM_HEADROOM / 2
+    left = max(centre - reach, low)
+    right = min(centre + reach, high)
 
     grid = np.linspace(left, right, CURVE_POINTS)
     corners = _corners(legs)
@@ -320,11 +330,39 @@ def payoff_table(legs: list[Leg], forward_centre: float, step: float = TABLE_STE
     the rows are 25,150 and 25,200 rather than 25,144.235 and 25,194.235 - and so the
     strike itself is a row, which matters because that is where a straddle peaks.
     """
-    low = np.ceil(forward_centre * (1 - FORWARD_RANGE) / step) * step
-    high = np.floor(forward_centre * (1 + FORWARD_RANGE) / step) * step
+    framed_left, framed_right = _frame(legs, forward_centre)
+    low = np.ceil(framed_left / step) * step
+    high = np.floor(framed_right / step) * step
     grid = np.arange(low, high + step / 2, step)
     pnl = pnl_at_expiry(grid, legs)
     return Curve(forward=[float(f) for f in grid], pnl_at_expiry=[float(p) for p in pnl])
+
+
+def _frame(legs: list[Leg], forward_centre: float) -> tuple[float, float]:
+    """The window a trader opens on: what the chart frames and what the table lists.
+
+    **Shared, because the two must not disagree.** They were separately derived for one
+    commit, and in that commit the chart drew an iron butterfly's corner at 23,500 while
+    the table beneath it started at 23,750 and had no row for it. "One computation, two
+    presentations" is the claim `payoff_table` makes about itself, and two windows is the
+    cheapest possible way to make it false.
+
+    +/-`FORWARD_RANGE` of the Forward, widened to hold every strike with `WING_MARGIN` to
+    spare. Not clipped to the stored domain here - the callers clip, and they clip to
+    different things: the curve to the domain it interpolates over, the table to the grid
+    it snaps to.
+    """
+    left = forward_centre * (1 - FORWARD_RANGE)
+    right = forward_centre * (1 + FORWARD_RANGE)
+
+    # The strikes themselves, not `_corners`, which appends the domain's own two ends and
+    # would widen every frame to the whole 0..55,900 the manifest publishes.
+    strikes = [leg.strike for leg in legs]
+    if strikes:
+        left = min(left, min(strikes) * (1 - WING_MARGIN))
+        right = max(right, max(strikes) * (1 + WING_MARGIN))
+
+    return left, right
 
 
 def _corners(legs: list[Leg]) -> np.ndarray:
