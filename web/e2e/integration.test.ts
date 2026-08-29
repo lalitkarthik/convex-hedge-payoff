@@ -264,6 +264,12 @@ describe("the strike slider", () => {
     // belongs to two Legs at one strike; this is a strangle, and its premium is the
     // 25,250 call's last plus the put's. If 344.05 had been carried across, this would
     // read 670.75 still and look untouched.
+    //
+    // Waited for rather than read: the URL is rewritten with the gesture and the figures
+    // arrive when the throttled `/analyse` answers, so the two are never atomic.
+    await page.waitForFunction(() =>
+      document.querySelector("table.kv")?.textContent?.includes("644.45"),
+    );
     const metrics = await page.locator("table.kv").innerText();
     expect(metrics).toContain("644.45"); //    317.75 + 326.70
     expect(metrics).toContain("24,555.55"); // 25,200 - 644.45
@@ -284,6 +290,60 @@ describe("the strike slider", () => {
     expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("25,250");
     expect(await page.locator("table.kv").innerText()).toContain("644.45");
   });
+}
+  it("survives its own edit, so one press drags the whole way", async () => {
+    // Reported by hand: the thumb moved one strike and stopped dead, and the mouse had to
+    // be released and pressed again for each one after that.
+    //
+    // The cause was the card's React key, which carried the strike - so every tick
+    // changed it, React unmounted and remounted the card, and the `<input type="range">`
+    // went with it. A pointer drag is captured by a DOM node; replace the node and the
+    // gesture ends. Nothing looked broken, because the tick that killed the drag was also
+    // the tick that worked.
+    //
+    // So this asserts the cause rather than the symptom: the element the pointer is
+    // holding must be the same element afterwards. A stamp on the node is the one thing a
+    // remount cannot preserve.
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
+    await slider.evaluate((el) => {
+      (el as HTMLElement & { stamp?: number }).stamp = 4242;
+    });
+
+    await slider.focus();
+    await page.keyboard.press("ArrowRight");
+    await page.waitForFunction(() => window.location.search.includes("25250CE"));
+
+    expect(
+      await slider.evaluate((el) => (el as HTMLElement & { stamp?: number }).stamp),
+    ).toBe(4242);
+  });
+
+  it("drags across many strikes in one gesture", async () => {
+    // The symptom itself, driven the way a trader drives it: press once, move, release.
+    // Ten steps to the right has to land ten strikes away, not one.
+    const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
+    const box = (await slider.boundingBox())!;
+    const y = box.y + box.height / 2;
+    const start = box.x + box.width / 2;
+
+    await page.mouse.move(start, y);
+    await page.mouse.down();
+    for (let step = 1; step <= 10; step++) {
+      await page.mouse.move(start + (box.width / 67) * step, y);
+    }
+    await page.mouse.up();
+
+    // 68 rungs across the track, so ten steps is ten rungs from wherever it started -
+    // 25,250 after the keyboard press above, hence 25,750. The assertion that matters is
+    // that it moved by more than one; the exact strike is asserted because it can be.
+    await page.waitForFunction(() => window.location.search.includes("25750CE"));
+    expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("25,750");
+  });
 });
 
 describe("the Leg editor", () => {
@@ -299,8 +359,10 @@ describe("the Leg editor", () => {
 
     await page.locator(".leg-card").nth(0).getByRole("button", { name: "B", exact: true }).click();
     await page.locator(".leg-card").nth(1).getByRole("button", { name: "B", exact: true }).click();
-    await page.waitForFunction(() => window.location.search.includes("25200CE10FEB26B1"));
 
+    await page.waitForFunction(() =>
+      document.querySelector("table.kv")?.textContent?.includes("debit"),
+    );
     expect(await page.locator("table.kv").innerText()).toContain("debit");
   });
 
@@ -341,10 +403,17 @@ describe("the Leg editor", () => {
 
   it("removes a Leg", async () => {
     await page.locator(".leg-card .drop").nth(2).click();
-    await page.waitForFunction(() => !window.location.search.includes("25200CE10FEB26B1"));
+
+    // Waiting on the *metrics*, not on the URL. The two are deliberately not atomic: the
+    // address bar is rewritten synchronously with the gesture, and the figures arrive
+    // when the throttled `/analyse` answers. Asserting straight after the URL changed
+    // caught the panel mid-flight, showing an answer to a Strategy that existed for one
+    // frame - which is a bug in the assertion and the intended behaviour of the screen.
+    await page.waitForFunction(() =>
+      document.querySelector("table.kv")?.textContent?.includes("670.75"),
+    );
 
     expect(await page.locator(".leg-card").count()).toBe(2);
-    expect(await page.locator("table.kv").innerText()).toContain("670.75");
   });
 });
 

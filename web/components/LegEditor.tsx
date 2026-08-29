@@ -5,7 +5,7 @@ import Toggle from "./Toggle";
 
 import { strike as fmtStrike, price } from "@/lib/format";
 import { addLeg, legalStrikes, moveLeg, nearestIndex } from "@/lib/strikes";
-import type { ChainResponse, Direction, LegRequest, OptionType } from "@/lib/types";
+import type { ChainResponse, Direction, LegRequest } from "@/lib/types";
 
 /**
  * The Strategy, editable, one card per Leg.
@@ -55,10 +55,21 @@ export default function LegEditor({
 
       {legs.map((leg, at) => {
         const ladder = legalStrikes(chain.rows, leg.option_type);
-        const other: OptionType = leg.option_type === "CE" ? "PE" : "CE";
 
         return (
-          <div className="leg-card" key={`${at}-${leg.strike}${leg.option_type}`}>
+          /*
+           * Keyed on position alone, and it has to be.
+           *
+           * The key used to carry the strike, which changes on every tick of a drag - so
+           * React unmounted and remounted the card, destroying the `<input type="range">`
+           * inside it. A pointer drag is captured by a DOM node, so replacing that node
+           * ends the gesture: the thumb moved one strike and then stopped dead until the
+           * mouse was released and pressed again.
+           *
+           * Nothing here needs remounting on a strike change. Every control is driven by
+           * props, so React updating them in place is the whole point.
+           */
+          <div className="leg-card" key={at}>
             <div className="leg-card-row">
               <Toggle
                 options={["B", "S"]}
