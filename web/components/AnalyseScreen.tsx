@@ -13,7 +13,7 @@ import StrikeSlider from "./StrikeSlider";
 
 import { istClock } from "@/lib/format";
 import { strategyHref, type View } from "@/lib/strategy-url";
-import { legalStrikes, withStrike } from "@/lib/strikes";
+import { legalStrikes, moveLeg } from "@/lib/strikes";
 import type {
   AnalysisResponse,
   ChainResponse,
@@ -164,7 +164,7 @@ export default function AnalyseScreen({
                 strike={leg.strike}
                 optionType={leg.option_type}
                 disabled={pending}
-                onCommit={(strike) => go(withStrike(legs, selected, strike))}
+                onCommit={(strike) => go(moveLeg(legs, selected, { strike }, chain.rows))}
               />
               {legs.length > 1 && (
                 <p className="note">
