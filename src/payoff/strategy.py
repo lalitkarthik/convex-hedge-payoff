@@ -60,7 +60,22 @@ line.
 which is a Spot-to-Forward conversion with the basis assumed to be zero - and it is
 +118.87 at the anchor, so the window sat 118.87 points to the left of the axis it was
 drawn on. Nothing looked wrong, because a window is symmetric about whatever it is
-handed."""
+handed.
+
+**A floor, not the whole rule.** A Strategy whose strikes fall outside this widens it -
+see `curve`. This is the frame a Strategy near the money gets, and the least any Strategy
+gets."""
+
+WING_MARGIN = 0.02
+"""How far past the outermost strike the window runs, once a wing has pushed it out.
+
+A corner drawn flush against the frame is indistinguishable from a curve that was cut off
+there - which is the failure this widening exists to fix - so the flat beyond the wing has
+to be visibly flat. 2% is about 500 points on this chain, ten strike intervals.
+
+Taken off the strike rather than off the Forward, so it scales with where the wing is and
+a Strategy far from the money is not framed by a number derived from a Forward it is
+nowhere near."""
 
 
 class MixedExpiry(ValueError):
@@ -247,10 +262,34 @@ def curve(legs: list[Leg], forward_centre: float) -> Curve:
 
     **Centred on the Forward** (#72), which is what the axis is measured in. It was
     centred on Spot, and the two are 118.87 apart at the anchor.
+
+    **And then widened to hold every strike in the Strategy.** +/-6% is a good frame for a
+    Strategy trading near the money and no frame at all for one that is not: an iron
+    butterfly with wings at 23,500 and 26,900 has both of them outside the window at the
+    anchor, so the chart ran off each edge still descending and drew a capped loss as an
+    uncapped one. Widening here rather than in the browser is forced - a client cannot
+    zoom out to points that were never sent, whatever its zoom control does.
+
+    The base window is still Forward-centred and the result usually still is, because most
+    Strategies sit inside it and nothing widens. What is *not* preserved is symmetry: a
+    Strategy with one far wing extends on that side alone, because the alternative is
+    mirroring dead space onto the other side to keep a property no one is reading. #72's
+    argument is untouched - it is about measuring in Forward rather than in Spot, and both
+    edges here are still multiples of the Forward.
     """
     low, high = forward_domain()
-    left = max(forward_centre * (1 - FORWARD_RANGE), low)
-    right = min(forward_centre * (1 + FORWARD_RANGE), high)
+    left = forward_centre * (1 - FORWARD_RANGE)
+    right = forward_centre * (1 + FORWARD_RANGE)
+
+    # The strikes themselves, not `_corners`, which appends the domain's own two ends and
+    # would widen every window to the whole 0..55,900 the manifest publishes.
+    strikes = [leg.strike for leg in legs]
+    if strikes:
+        left = min(left, min(strikes) * (1 - WING_MARGIN))
+        right = max(right, max(strikes) * (1 + WING_MARGIN))
+
+    left = max(left, low)
+    right = min(right, high)
 
     grid = np.linspace(left, right, CURVE_POINTS)
     corners = _corners(legs)

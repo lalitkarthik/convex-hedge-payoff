@@ -457,3 +457,62 @@ def test_text_that_is_not_an_expiry_says_so_rather_than_returning_nothing(client
     )
     assert response.status_code == 422, response.text
     assert "10FEB26" in response.json()["detail"], "the form, shown rather than described"
+
+
+def test_the_window_widens_to_hold_a_structure_whose_wings_fall_outside_it(client):
+    """An iron butterfly's bought wings are off the +/-6% window, and were undrawable.
+
+    +/-6% of the Forward is 23,705.97 to 26,732.26 at the anchor. This structure's wings
+    are at 23,500 and 26,900 - both outside it - so the chart drew the body, ran off the
+    frame in each direction still descending, and showed neither the corner where the
+    loss stops growing nor the flat maximum loss beyond it. A trader reading it would
+    have seen an unbounded loss on a structure whose whole point is that the loss is
+    capped, which is the most consequential thing a payoff chart can get wrong.
+
+    Zooming out could not have rescued it: there is nothing to zoom out *to*, because the
+    curve the engine returned stopped at 26,732.26 as well. The window is what has to
+    widen, and it widens here rather than in the browser - the browser cannot interpolate
+    points that were never sent.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": 23500.0, "option_type": "PE", "direction": 1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": 26900.0, "option_type": "CE", "direction": 1},
+        ],
+    ).json()
+    points = body["curve"]["forward"]
+
+    assert min(points) < 23500.0, "the bought put's corner is inside the window"
+    assert max(points) > 26900.0, "and so is the bought call's"
+
+    # Past the wings the structure is flat, and the chart has to show enough of that flat
+    # to read as flat rather than as a curve that was cut off. Max loss is -1,065.05 here.
+    assert body["metrics"]["max_loss"] == pytest.approx(-1065.05, abs=0.01)
+    left = [p for f, p in zip(points, body["curve"]["pnl_at_expiry"]) if f < 23500.0]
+    assert left, "there are points beyond the left wing"
+    assert all(p == pytest.approx(-1065.05, abs=0.01) for p in left), "and they are flat"
+
+
+def test_a_structure_that_fits_keeps_the_window_it_had(client):
+    """The widening is driven by the Legs, so a Strategy inside +/-6% must not move it.
+
+    Widening unconditionally - to the whole stored domain, say, which runs to 55,900 -
+    would make every ordinary straddle a flat line across a chart eleven times too wide.
+    The default framing is the thing being preserved here, and this is the test that
+    fails if a later change makes the window a constant again.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+        ],
+    ).json()
+    points = body["curve"]["forward"]
+    forward = body["forward"]
+
+    assert min(points) == pytest.approx(forward * 0.94, rel=1e-9)
+    assert max(points) == pytest.approx(forward * 1.06, rel=1e-9)
