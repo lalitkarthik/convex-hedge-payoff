@@ -430,11 +430,30 @@ describe("the Leg editor", () => {
 
 describe("the payoff chart", () => {
   const chartRange = () => page.locator(".chart-range");
+  const chartText = () => chartRange().innerText();
   const chartWidth = async () => {
-    const [lo, hi] = (await chartRange().innerText())
+    const [lo, hi] = (await chartText())
       .split("–")
       .map((s) => Number(s.replace(/[^\d.]/g, "")));
     return hi! - lo!;
+  };
+
+  /**
+   * Wait for the window to actually be redrawn before measuring it.
+   *
+   * Setting state is not rendering. A dispatched wheel event returns the moment its
+   * listeners have run, and reading the label straight afterwards is a separate
+   * round-trip that can easily win the race against React - which it did, reporting the
+   * pre-pinch width and failing a fix that worked. Clicks happen to be slow enough to
+   * hide this, which makes it the more dangerous kind of flake: it would have shown up
+   * later, on a different test, on someone else's machine.
+   */
+  const rangeChangedFrom = async (before: string) => {
+    await page.waitForFunction(
+      (was) => document.querySelector(".chart-range")?.textContent !== was,
+      before,
+      { timeout: 4000 },
+    );
   };
 
   it("opens on the frame and zooms into it", async () => {
@@ -462,7 +481,9 @@ describe("the payoff chart", () => {
     await page.getByRole("button", { name: "reset zoom" }).click();
     const opened = await chartWidth();
 
+    const before = await chartText();
     await page.getByRole("button", { name: "zoom out" }).click();
+    await rangeChangedFrom(before);
     const out = await chartWidth();
     expect(out).toBeGreaterThan(opened);
 
@@ -480,6 +501,7 @@ describe("the payoff chart", () => {
     // prop this used to use *could not* cancel it however it was written - pinching to
     // magnify the curve magnified the whole of Chrome, chart and chrome together.
     const before = await chartWidth();
+    const label = await chartText();
 
     const prevented = await page.evaluate(() => {
       const node = document.querySelector(".chart-plot")!;
@@ -499,6 +521,8 @@ describe("the payoff chart", () => {
     // The claim is precisely that the page's own zoom was cancelled. A test that only
     // checked the chart had zoomed would have passed against the broken version too.
     expect(prevented).toBe(true);
+
+    await rangeChangedFrom(label);
     expect(await chartWidth()).toBeLessThan(before);
 
     await page.getByRole("button", { name: "reset zoom" }).click();
