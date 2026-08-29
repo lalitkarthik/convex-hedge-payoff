@@ -13,7 +13,7 @@ import {
 
 import type { Curve } from "@/lib/types";
 import { level, price } from "@/lib/format";
-import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
+import { fit, fullSpan, waterline, zoom, type Span } from "@/lib/zoom";
 
 /**
  * **P&L at expiry** — not "payoff". `CONTEXT.md` is explicit that both lines a trader
@@ -27,7 +27,8 @@ import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
  * 400 points across the Forward ±6%, with the region above zero and the region below it
  * visibly different. The colour change is a `linearGradient` whose offset sits exactly
  * where the curve crosses zero, which is why the fill switches at the axis rather than
- * at a rounded gridline.
+ * at a rounded gridline. That offset is measured against the *shape*, not the axis - see
+ * `waterline`, and do not be tempted to feed it the padded domain the zoom fit returns.
  *
  * **Every colour here is a `var()`, and that is load-bearing.** Recharts takes colour
  * as JS props, so these values never touch the CSS cascade - and until the theme work
@@ -91,15 +92,11 @@ export default function PayoffChart({
 
   const vertical = useMemo(() => fit(points, span), [points, span]);
 
-  // Where zero sits as a fraction of the vertical span. The gradient switches colour
-  // exactly there, so "above water" and "below water" are the regions they claim to be.
-  // Read off the *visible* span, so the waterline stays put when the axis refits.
-  const zero =
-    vertical.max <= 0
-      ? 0
-      : vertical.min >= 0
-        ? 1
-        : vertical.max / (vertical.max - vertical.min);
+  // Where the fill switches colour. Off the **curve**, not off `vertical` - the gradient
+  // measures against the filled shape's own box, and `vertical` carries 8% of padding
+  // that the shape does not. Using it put the boundary a sliver away from the axis and
+  // painted the bottom of the profit region as loss. See `waterline`.
+  const zero = waterline(curve.pnl_at_expiry);
 
   const by = (factor: number, focus = (span.min + span.max) / 2) =>
     setHeld(zoom(full, span, factor, focus));

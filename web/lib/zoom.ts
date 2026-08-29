@@ -85,3 +85,35 @@ export function fit(points: { forward: number; pnl: number }[], span: Span): Spa
 
   return { min: low - pad, max: high + pad };
 }
+
+/**
+ * Where the fill switches from gain to loss, as a fraction down the shape's own box.
+ *
+ * **Measured against the curve, never against the window**, and that distinction is the
+ * whole of this function. An SVG gradient with the default `objectBoundingBox` units
+ * measures against the geometry of the shape it fills - and the shape here is a Recharts
+ * `Area`, which runs from the curve down to the zero baseline. It has nothing to do with
+ * the axis domain.
+ *
+ * Feeding it a padded domain, which is what `fit` returns, puts the boundary off the axis
+ * by exactly the padding: a sliver of profit painted as loss along the x-axis. That is a
+ * mistake this file has already made once, and it is invisible unless you look for it.
+ *
+ * Zero is folded in because the baseline is part of the shape whether or not the curve
+ * ever reaches it - a Strategy that never loses money still has a fill that extends down
+ * to the axis, and measuring only between its own values would put the colour change
+ * inside a region that is entirely profit.
+ *
+ * The ratio survives zooming untouched: refitting the vertical axis rescales the shape,
+ * and a linear rescale does not move a fraction of its own height.
+ */
+export function waterline(values: number[]): number {
+  if (values.length === 0) return 0.5;
+
+  const high = Math.max(...values, 0);
+  const low = Math.min(...values, 0);
+
+  // A flat curve at zero has no height, and the offset would be NaN - which reaches the
+  // SVG as an attribute and renders as an untinted chart with no error anywhere.
+  return high === low ? 0.5 : high / (high - low);
+}

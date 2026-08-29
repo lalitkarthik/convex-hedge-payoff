@@ -485,6 +485,44 @@ describe("the payoff chart", () => {
     expect(await reset.isDisabled()).toBe(true);
   });
 
+  it("switches colour exactly at the axis, not near it", async () => {
+    // A gradient with the default `objectBoundingBox` units measures against the filled
+    // shape, which runs from the curve to the zero baseline - not against the axis
+    // domain. Feeding it the padded domain the zoom fit returns moved the boundary 0.86%
+    // of the height, so a 3.6px band of profit sat above the axis painted as loss.
+    //
+    // The expected offset is derived from the engine's own figures rather than from the
+    // page: max profit 670.75, and a floor of -861.51 at the bottom of the window.
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    const stops = page.locator("svg.recharts-surface linearGradient stop");
+    expect(await stops.count()).toBe(2);
+
+    // Both stops sit at the same offset - that is what makes the fill change hard at the
+    // waterline instead of blending across the whole chart.
+    const first = Number(await stops.nth(0).getAttribute("offset"));
+    const second = Number(await stops.nth(1).getAttribute("offset"));
+    expect(first).toBeCloseTo(second, 9);
+
+    expect(first).toBeCloseTo(670.75 / (670.75 + 861.51), 4);
+  });
+
+  it("keeps the colour boundary where it is when the axis refits", async () => {
+    // Zooming rescales the shape, and a linear rescale does not move a fraction of the
+    // shape's own height - so the waterline must not drift. It would if the offset were
+    // ever recomputed from the visible window.
+    const offset = async () =>
+      Number(await page.locator("svg.recharts-surface linearGradient stop").first().getAttribute("offset"));
+
+    const before = await offset();
+    for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "zoom in" }).click();
+
+    expect(await offset()).toBeCloseTo(before, 9);
+  });
+
   it("leaves room for the forward label rather than clipping it", async () => {
     // The label sits above the plot area, and an 8px top margin cut it in half. It is
     // rendered inside the SVG, so this asserts it is actually within the frame.

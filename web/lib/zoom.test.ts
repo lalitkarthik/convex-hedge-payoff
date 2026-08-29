@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { fit, fullSpan, zoom, MIN_FRACTION } from "./zoom";
+import { fit, fullSpan, waterline, zoom, MIN_FRACTION } from "./zoom";
 
 /**
  * The window the payoff chart is looking through.
@@ -116,5 +116,56 @@ describe("fit", () => {
     const span = fit(flat, { min: 24000, max: 26000 });
 
     expect(span.max).toBeGreaterThan(span.min);
+  });
+});
+
+describe("waterline", () => {
+  /*
+   * Where the fill changes colour, as a fraction down the **filled shape's** box.
+   *
+   * The subtlety that broke this once: an SVG gradient with the default
+   * `objectBoundingBox` units measures against the geometry of the shape it fills, which
+   * for a Recharts `Area` runs from the curve to the zero baseline. It does *not* measure
+   * against the axis domain - so a domain with padding on it, which is what `fit` returns,
+   * puts the colour boundary off the axis by exactly the padding, and a sliver of profit
+   * gets painted as loss.
+   *
+   * So this is computed from the curve, never from the window.
+   */
+
+  test("a Strategy entirely in profit is all gain", () => {
+    expect(waterline([100, 200, 300])).toBe(1);
+  });
+
+  test("a Strategy entirely under water is all loss", () => {
+    expect(waterline([-100, -200])).toBe(0);
+  });
+
+  test("an even split crosses in the middle", () => {
+    expect(waterline([-100, 100])).toBeCloseTo(0.5, 6);
+  });
+
+  test("a short straddle crosses near the top, where its profit is", () => {
+    // Capped gain, uncapped loss: 670.75 of profit against 3,000 of downside, so the
+    // green band is a fifth of the height. Getting this backwards paints most of the
+    // chart green on a Strategy that mostly loses.
+    expect(waterline([670.75, -3000])).toBeCloseTo(670.75 / 3670.75, 6);
+  });
+
+  test("the baseline counts even when no point reaches it", () => {
+    // The fill runs from the curve down to zero, so zero is part of the shape whether or
+    // not the curve ever touches it. Measuring between 100 and 300 would put the boundary
+    // inside a region that is entirely profit.
+    expect(waterline([100, 300])).toBe(1);
+  });
+
+  test("a flat zero curve does not divide by zero", () => {
+    expect(waterline([0, 0])).toBe(0.5);
+  });
+
+  test("an empty curve is a half rather than a NaN", () => {
+    // NaN is banned on the wire and in the core, and it would reach the SVG as an
+    // `offset` attribute here, where it renders as an untinted chart and no error.
+    expect(waterline([])).toBe(0.5);
   });
 });
