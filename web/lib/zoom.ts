@@ -67,11 +67,11 @@ export function zoom(full: Span, current: Span, factor: number, focus: number): 
  * zooming in without refitting the vertical axis shows the same flat line, larger.
  *
  * **Zero is always in the span**, and this is not a presentation choice - it is what
- * keeps the fill the right colour. A Recharts `Area` draws from the curve to its
- * baseline, and the baseline is zero *only while zero is inside the domain*; outside it,
- * the baseline clamps to the nearest edge. That silently changes the filled shape, and
- * `waterline` measures against exactly that shape, so a window that excluded zero would
- * paint the boundary against a box which no longer exists.
+ * keeps the fill the right colour. The two Areas in `PayoffChart` are each drawn from
+ * their series down to a baseline, and that baseline is zero *only while zero is inside
+ * the domain*; outside it, it clamps to the nearest edge. A window that excluded zero
+ * would fill from the curve to the bottom of the frame instead of to the axis, which is
+ * the same picture the gradient used to get wrong (`lib/curve.ts`).
  *
  * It costs something real: zoom into a region entirely in profit and the axis still has
  * to reach down to zero, so the vertical zoom is weaker than it could be. That is the
@@ -92,36 +92,4 @@ export function fit(points: { forward: number; pnl: number }[], span: Span): Spa
   const pad = Math.max((high - low) * 0.08, 1);
 
   return { min: low - pad, max: high + pad };
-}
-
-/**
- * Where the fill switches from gain to loss, as a fraction down the shape's own box.
- *
- * **Measured against the curve, never against the window**, and that distinction is the
- * whole of this function. An SVG gradient with the default `objectBoundingBox` units
- * measures against the geometry of the shape it fills - and the shape here is a Recharts
- * `Area`, which runs from the curve down to the zero baseline. It has nothing to do with
- * the axis domain.
- *
- * Feeding it a padded domain, which is what `fit` returns, puts the boundary off the axis
- * by exactly the padding: a sliver of profit painted as loss along the x-axis. That is a
- * mistake this file has already made once, and it is invisible unless you look for it.
- *
- * Zero is folded in because the baseline is part of the shape whether or not the curve
- * ever reaches it - a Strategy that never loses money still has a fill that extends down
- * to the axis, and measuring only between its own values would put the colour change
- * inside a region that is entirely profit.
- *
- * The ratio survives zooming untouched: refitting the vertical axis rescales the shape,
- * and a linear rescale does not move a fraction of its own height.
- */
-export function waterline(values: number[]): number {
-  if (values.length === 0) return 0.5;
-
-  const high = Math.max(...values, 0);
-  const low = Math.min(...values, 0);
-
-  // A flat curve at zero has no height, and the offset would be NaN - which reaches the
-  // SVG as an attribute and renders as an untinted chart with no error anywhere.
-  return high === low ? 0.5 : high / (high - low);
 }

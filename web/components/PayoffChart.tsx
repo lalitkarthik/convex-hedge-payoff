@@ -4,6 +4,7 @@ import { useMemo, useState, type WheelEvent } from "react";
 import {
   Area,
   ComposedChart,
+  Line,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -13,7 +14,8 @@ import {
 
 import type { Curve } from "@/lib/types";
 import { level, price } from "@/lib/format";
-import { fit, fullSpan, waterline, zoom, type Span } from "@/lib/zoom";
+import { split } from "@/lib/curve";
+import { fit, fullSpan, zoom, type Span } from "@/lib/zoom";
 
 /**
  * **P&L at expiry** — not "payoff". `CONTEXT.md` is explicit that both lines a trader
@@ -25,12 +27,9 @@ import { fit, fullSpan, waterline, zoom, type Span } from "@/lib/zoom";
  * is +118.87 at the anchor, so a Forward printed as a Spot is a plausible index level.
  *
  * 400 points across the Forward ±6%, with the region above zero and the region below it
- * visibly different. The colour change is a `linearGradient` whose offset sits exactly
- * where the curve crosses zero, which is why the fill switches at the axis rather than
- * at a rounded gridline. That offset is measured against the *shape*, not the axis - see
- * `waterline`, and do not be tempted to feed it the padded domain the zoom fit returns.
- * The gradient's id carries the offset for a reason; see `fillId` below before making it
- * a constant again.
+ * visibly different. **Two Areas clamped either side of zero**, not one Area painted with
+ * a gradient - see `lib/curve.ts` for why that was abandoned after three failed attempts
+ * to place a gradient offset correctly. There is no offset now, and so nothing to place.
  *
  * **Every colour here is a `var()`, and that is load-bearing.** Recharts takes colour
  * as JS props, so these values never touch the CSS cascade - and until the theme work
@@ -94,27 +93,9 @@ export default function PayoffChart({
 
   const vertical = useMemo(() => fit(points, span), [points, span]);
 
-  // Where the fill switches colour. Off the **curve**, not off `vertical` - the gradient
-  // measures against the filled shape's own box, and `vertical` carries 8% of padding
-  // that the shape does not. Using it put the boundary a sliver away from the axis and
-  // painted the bottom of the profit region as loss. See `waterline`.
-  const zero = waterline(curve.pnl_at_expiry);
-
-  /*
-   * The gradient's id changes whenever the waterline does, and that is a repaint fix
-   * rather than tidiness.
-   *
-   * A fill of `url(#pnl)` is a *reference*. Browsers do not reliably repaint the element
-   * holding that reference when only the referenced gradient's `offset` attributes
-   * change - the paint server is treated as unchanged because its identity has not
-   * changed. So the first render was correct and every drag after it kept the previous
-   * curve's boundary, which is exactly the band of miscoloured profit that survived the
-   * last fix: the arithmetic was right and the screen was showing a stale answer.
-   *
-   * Rounded to six places so the id is a stable integer rather than a float with a dot
-   * in it, and so a boundary that has not meaningfully moved does not churn the DOM.
-   */
-  const fillId = `pnl-${Math.round(zero * 1e6)}`;
+  // The two fills, and the crossings that make them meet on the axis. `split` is where
+  // the colour rule lives; nothing here decides where green becomes red.
+  const shaped = useMemo(() => split(points), [points]);
 
   const by = (factor: number, focus = (span.min + span.max) / 2) =>
     setHeld(zoom(full, span, factor, focus));
@@ -158,14 +139,7 @@ export default function PayoffChart({
           needs. */}
       <div className="chart-plot" style={{ height }} onWheel={onWheel}>
       <ResponsiveContainer>
-        <ComposedChart data={points} margin={{ top: 26, right: 12, bottom: 18, left: 4 }}>
-          <defs>
-            <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset={zero} stopColor="var(--gain)" stopOpacity={0.75} />
-              <stop offset={zero} stopColor="var(--loss)" stopOpacity={0.75} />
-            </linearGradient>
-          </defs>
-
+        <ComposedChart data={shaped} margin={{ top: 26, right: 12, bottom: 18, left: 4 }}>
           <XAxis
             dataKey="forward"
             type="number"
@@ -236,12 +210,44 @@ export default function PayoffChart({
             />
           ))}
 
+          {/*
+            Two fills and a separate stroke.
+
+            Each Area is zero on the side it does not own, so the green one contributes
+            nothing wherever the Strategy loses money and the red one contributes nothing
+            wherever it makes any. The boundary is at zero because there is nowhere else
+            it could be - which is the whole reason this is not a gradient any more.
+
+            `tooltipType="none"` keeps them out of the hover card: they are one curve
+            wearing two colours, and a tooltip listing three series would say otherwise.
+          */}
           <Area
+            type="linear"
+            dataKey="gain"
+            stroke="none"
+            fill="var(--gain)"
+            fillOpacity={0.75}
+            isAnimationActive={false}
+            dot={false}
+            tooltipType="none"
+            activeDot={false}
+          />
+          <Area
+            type="linear"
+            dataKey="loss"
+            stroke="none"
+            fill="var(--loss)"
+            fillOpacity={0.75}
+            isAnimationActive={false}
+            dot={false}
+            tooltipType="none"
+            activeDot={false}
+          />
+          <Line
             type="linear"
             dataKey="pnl"
             stroke="var(--ink)"
             strokeWidth={1.6}
-            fill={`url(#${fillId})`}
             isAnimationActive={false}
             dot={false}
           />

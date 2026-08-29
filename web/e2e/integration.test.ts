@@ -485,75 +485,61 @@ describe("the payoff chart", () => {
     expect(await reset.isDisabled()).toBe(true);
   });
 
-  it("switches colour exactly at the axis, not near it", async () => {
-    // A gradient with the default `objectBoundingBox` units measures against the filled
-    // shape, which runs from the curve to the zero baseline - not against the axis
-    // domain. Feeding it the padded domain the zoom fit returns moved the boundary 0.86%
-    // of the height, so a 3.6px band of profit sat above the axis painted as loss.
+  it("meets the axis exactly, with no band of profit painted as loss", async () => {
+    // Reported three times, and the first two fixes were arithmetically right and still
+    // wrong on screen. The colour used to come from a gradient whose boundary was a
+    // fraction of the filled shape's bounding box - the browser's geometry, not
+    // something this code could see - so it drifted with padding, with zoom, and with a
+    // repaint that never happened.
     //
-    // The expected offset is derived from the engine's own figures rather than from the
-    // page: max profit 670.75, and a floor of -861.51 at the bottom of the window.
+    // Two clamped Areas now, so the assertion is about *shape* rather than about an
+    // offset: the green fill must not extend below the zero line, and the red must not
+    // extend above it. That is checkable without knowing any of Recharts' internals, and
+    // it is the property a trader is actually looking at.
     await page.goto(
       `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
       { waitUntil: "networkidle" },
     );
 
-    const stops = page.locator("svg.recharts-surface linearGradient stop");
-    expect(await stops.count()).toBe(2);
+    const bounds = async () => {
+      const areas = await page.locator("svg.recharts-surface .recharts-area-area").all();
+      expect(areas.length).toBe(2);
+      const [gain, loss] = await Promise.all(areas.map((a) => a.boundingBox()));
+      // The zero line is a ReferenceLine, and it is the only horizontal one at y=0.
+      const zero = (await page
+        .locator("svg.recharts-surface .recharts-reference-line line")
+        .first()
+        .boundingBox())!;
+      return { gain: gain!, loss: loss!, zero };
+    };
 
-    // Both stops sit at the same offset - that is what makes the fill change hard at the
-    // waterline instead of blending across the whole chart.
-    const first = Number(await stops.nth(0).getAttribute("offset"));
-    const second = Number(await stops.nth(1).getAttribute("offset"));
-    expect(first).toBeCloseTo(second, 9);
+    const { gain, loss, zero } = await bounds();
 
-    expect(first).toBeCloseTo(670.75 / (670.75 + 861.51), 4);
+    // One pixel of slack for the stroke's own width and subpixel rounding. The bug being
+    // guarded was 3.6px and grew with the padding, so this is nowhere near it.
+    expect(gain.y + gain.height).toBeLessThanOrEqual(zero.y + 1);
+    expect(loss.y).toBeGreaterThanOrEqual(zero.y - 1);
   });
 
-  it("moves the colour boundary when the Strategy changes", async () => {
-    // The assertion that was missing, and the reason a fix that was arithmetically
-    // correct still looked broken. `fill="url(#id)"` is a reference, and browsers do not
-    // reliably repaint the referencing element when only the gradient's offsets change -
-    // so the first render was right and every drag after it kept the previous curve's
-    // boundary. Asserting the offset on a freshly loaded page could never see that.
-    const offset = async () =>
-      Number(
-        await page
-          .locator("svg.recharts-surface linearGradient stop")
-          .first()
-          .getAttribute("offset"),
-      );
-
-    const before = await offset();
-
-    // Move a Leg, which changes the curve's extremes and so the waterline.
+  it("still meets the axis after a Leg moves", async () => {
+    // The case that survived two fixes: correct on load, wrong the moment a strike moved.
+    // The old gradient was referenced by id, and browsers do not reliably repaint a
+    // reference whose target changed only in an attribute - so asserting on a freshly
+    // loaded page could never have caught it.
     const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
     await slider.focus();
     for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
     await page.waitForFunction(() => !window.location.search.includes("25200CE"));
 
-    // The rendered offset has to follow the new curve, not the one it was drawn with.
-    await page.waitForFunction(
-      (was) => {
-        const stop = document.querySelector("svg.recharts-surface linearGradient stop");
-        return stop !== null && Number(stop.getAttribute("offset")) !== was;
-      },
-      before,
-    );
-    expect(await offset()).not.toBe(before);
-  });
+    const areas = await page.locator("svg.recharts-surface .recharts-area-area").all();
+    const [gain, loss] = await Promise.all(areas.map((a) => a.boundingBox()));
+    const zero = (await page
+      .locator("svg.recharts-surface .recharts-reference-line line")
+      .first()
+      .boundingBox())!;
 
-  it("keeps the colour boundary where it is when the axis refits", async () => {
-    // Zooming rescales the shape, and a linear rescale does not move a fraction of the
-    // shape's own height - so the waterline must not drift. It would if the offset were
-    // ever recomputed from the visible window.
-    const offset = async () =>
-      Number(await page.locator("svg.recharts-surface linearGradient stop").first().getAttribute("offset"));
-
-    const before = await offset();
-    for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "zoom in" }).click();
-
-    expect(await offset()).toBeCloseTo(before, 9);
+    expect(gain!.y + gain!.height).toBeLessThanOrEqual(zero.y + 1);
+    expect(loss!.y).toBeGreaterThanOrEqual(zero.y - 1);
   });
 
   it("leaves room for the forward label rather than clipping it", async () => {
@@ -621,8 +607,10 @@ describe("the theme", () => {
     );
     await dark.waitForSelector("svg.recharts-surface");
 
+    // `.recharts-line-curve`, not `.recharts-area-curve`: the curve is its own `Line`
+    // since the fill was split into two Areas, and both of those carry `stroke="none"`.
     const stroke = await dark.evaluate(() => {
-      const curve = document.querySelector("svg.recharts-surface .recharts-area-curve");
+      const curve = document.querySelector("svg.recharts-surface .recharts-line-curve");
       return curve ? getComputedStyle(curve).stroke : null;
     });
     expect(stroke).toBe("rgb(230, 237, 243)"); // --ink dark, #e6edf3
