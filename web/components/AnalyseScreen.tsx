@@ -63,11 +63,15 @@ type Tab = "pnl" | "greeks" | "table";
 /**
  * How often a drag is allowed to ask the engine, in milliseconds.
  *
- * Measured rather than guessed: `/analyse` answers this Strategy in ~5ms direct, and in
- * ~200ms through the dev server's rewrite, which is dev-server overhead and not the
- * engine. 120 keeps a continuous drag to eight questions a second - visibly live, and
- * comfortably inside what the engine can answer. Overlap is harmless anyway: a late answer
- * is discarded rather than rendered.
+ * Measured rather than guessed. `/analyse` answers this Strategy in ~5ms direct; through
+ * the same-origin rewrite it is ~10-20ms against `next start` and ~200ms against
+ * `next dev`, so the number a developer sees while working on this file is an order of
+ * magnitude worse than the one a trader gets, and tuning against it would be tuning
+ * against the dev server.
+ *
+ * 120 holds a continuous drag to eight questions a second, which is well inside what the
+ * engine answers and fast enough that the curve tracks the thumb. Overlap is harmless in
+ * any case: a late answer is discarded rather than rendered.
  */
 const ASK_EVERY_MS = 120;
 
