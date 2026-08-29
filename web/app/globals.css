@@ -359,6 +359,13 @@ td.blank { background: repeating-linear-gradient(45deg, transparent, transparent
 .bs button.buy:hover { background: var(--call); border-color: var(--call); color: var(--on-accent); }
 .bs button.sell:hover { background: var(--put); border-color: var(--put); color: var(--on-accent); }
 
+/* A contract already in the Strategy. The lit state is the hover state made permanent,
+   rather than a treatment of its own: hovering already means "this click adds this
+   contract", and lit means the click has been made - so there is one visual idea here
+   and not two. Clicking a lit button takes the Leg back off. */
+.bs button.buy.on { background: var(--call); border-color: var(--call); color: var(--on-accent); }
+.bs button.sell.on { background: var(--put); border-color: var(--put); color: var(--on-accent); }
+
 /* --------------------------------------------------------------- panel */
 
 .panel h2 {

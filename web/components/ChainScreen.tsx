@@ -11,6 +11,7 @@ import TimeControl from "./TimeControl";
 import ViewPicker from "./ViewPicker";
 
 import { buildPreset } from "@/lib/api";
+import { dropFirst, heldAt } from "@/lib/positions";
 import { strategyHref, type View } from "@/lib/strategy-url";
 import type {
   ChainResponse,
@@ -113,8 +114,21 @@ export default function ChainScreen({
     [chain],
   );
 
-  const addLeg = useCallback(
+  /**
+   * B and S both add and remove, depending on what is already held.
+   *
+   * The button lights when the contract beside it is in the Strategy, so clicking a lit
+   * one has to take it back off - a lit button that only ever added would be showing
+   * state it refused to let you change. It removes **one** matching Leg, so a two-lot
+   * position built by clicking B twice comes off with two clicks rather than one.
+   */
+  const toggleLeg = useCallback(
     (strike: number, optionType: OptionType, direction: Direction) => {
+      if (heldAt(legs, strike, optionType, direction, chain.expiry)) {
+        here(chain.moment, dropFirst(legs, strike, optionType, direction, chain.expiry));
+        return;
+      }
+
       const row = chain.rows.find((candidate) => candidate.strike === strike);
       const quote = optionType === "CE" ? row?.call : row?.put;
       if (!quote) return;
@@ -167,7 +181,7 @@ export default function ChainScreen({
 
       <div className="body">
         <main className={`main ${pending ? "pending" : ""}`}>
-          <ChainTable chain={chain} atTheMoney={atTheMoney} onPick={addLeg} />
+          <ChainTable chain={chain} atTheMoney={atTheMoney} legs={legs} onPick={toggleLeg} />
         </main>
 
         <aside className="panel">

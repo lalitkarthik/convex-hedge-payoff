@@ -2,9 +2,17 @@
 
 import { useEffect, useRef } from "react";
 
-import type { ChainResponse, ChainRow, ChainQuote, Direction, OptionType } from "@/lib/types";
+import type {
+  ChainResponse,
+  ChainRow,
+  ChainQuote,
+  Direction,
+  LegRequest,
+  OptionType,
+} from "@/lib/types";
 import { count, greek, price, strike as fmtStrike, volatility } from "@/lib/format";
 import { inTheMoney } from "@/lib/moneyness";
+import { heldAt } from "@/lib/positions";
 
 /**
  * Calls left, puts right, strikes down the middle, **one shared IV column**.
@@ -31,6 +39,12 @@ import { inTheMoney } from "@/lib/moneyness";
  * likely to still be live. It is a wash and not a veil — every figure stays at full
  * contrast. Measured against the Forward, by the rule the star already follows
  * (`lib/moneyness.ts`).
+ *
+ * A **B or S already in the Strategy is lit**, and clicking a lit one takes that Leg
+ * back off. The Chain has been holding the Legs all along and rendering none of them
+ * onto the table, so a strike already in the position looked exactly like one that was
+ * not. The lit treatment is the hover treatment made permanent, so there is nothing new
+ * to learn - see `lib/positions.ts` for what counts as the same contract.
  */
 
 const STALE_MINUTES = 60;
@@ -40,12 +54,16 @@ function QuoteCells({
   side,
   strike,
   forward,
+  expiry,
+  legs,
   onPick,
 }: {
   quote: ChainQuote | null;
   side: OptionType;
   strike: number;
   forward: number;
+  expiry: string;
+  legs: LegRequest[];
   onPick: (strike: number, optionType: OptionType, direction: Direction) => void;
 }) {
   if (!quote) {
@@ -65,13 +83,29 @@ function QuoteCells({
   // left unwashed, because there is no contract there and shading an absence would be
   // making a claim about a price that was never printed.
   const itm = inTheMoney(strike, forward, side) ? "itm" : "";
+  // The Expiry comes off the response rather than off the URL: a Leg names its own
+  // series, and the two differ for as long as it takes the engine to resolve a stale
+  // link. Lighting a button against the wrong series would claim a position in an
+  // instrument that is not on screen.
+  const bought = heldAt(legs, strike, side, 1, expiry);
+  const sold = heldAt(legs, strike, side, -1, expiry);
   const buttons = (
     <td className={itm}>
       <span className="bs">
-        <button className="buy" onClick={() => onPick(strike, side, 1)} title="Buy">
+        <button
+          className={`buy ${bought ? "on" : ""}`}
+          onClick={() => onPick(strike, side, 1)}
+          title={bought ? "Bought — click to remove" : "Buy"}
+          aria-pressed={bought}
+        >
           B
         </button>
-        <button className="sell" onClick={() => onPick(strike, side, -1)} title="Sell">
+        <button
+          className={`sell ${sold ? "on" : ""}`}
+          onClick={() => onPick(strike, side, -1)}
+          title={sold ? "Sold — click to remove" : "Sell"}
+          aria-pressed={sold}
+        >
           S
         </button>
       </span>
@@ -112,10 +146,12 @@ function QuoteCells({
 export default function ChainTable({
   chain,
   atTheMoney,
+  legs,
   onPick,
 }: {
   chain: ChainResponse;
   atTheMoney: number;
+  legs: LegRequest[];
   onPick: (strike: number, optionType: OptionType, direction: Direction) => void;
 }) {
   const money = useRef<HTMLTableRowElement>(null);
@@ -173,6 +209,8 @@ export default function ChainTable({
                 side="CE"
                 strike={row.strike}
                 forward={chain.forward}
+                expiry={chain.expiry}
+                legs={legs}
                 onPick={onPick}
               />
               <td className="strike">
@@ -185,6 +223,8 @@ export default function ChainTable({
                 side="PE"
                 strike={row.strike}
                 forward={chain.forward}
+                expiry={chain.expiry}
+                legs={legs}
                 onPick={onPick}
               />
             </tr>
