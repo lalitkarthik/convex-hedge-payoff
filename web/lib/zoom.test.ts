@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { contain, fit, fullSpan, zoom, MIN_FRACTION } from "./zoom";
+import { contain, fit, fullSpan, wheelFactor, zoom, MIN_FRACTION } from "./zoom";
 
 /**
  * The window the payoff chart is looking through.
@@ -169,5 +169,38 @@ describe("contain", () => {
     const full = { min: 24000, max: 25000 };
 
     expect(contain(full, { min: 20000, max: 30000 })).toEqual(full);
+  });
+});
+
+describe("wheelFactor", () => {
+  test("narrows the window when the wheel turns towards the screen", () => {
+    expect(wheelFactor(-100)).toBeLessThan(1);
+    expect(wheelFactor(100)).toBeGreaterThan(1);
+  });
+
+  test("keeps a notch of the wheel worth about the 15% it always was", () => {
+    // A mouse wheel reports around 100 per notch. This is the number that was hard-coded
+    // before pinch made it have to vary, and it is a comfortable step.
+    expect(wheelFactor(-100)).toBeCloseTo(0.85, 2);
+    expect(wheelFactor(100)).toBeCloseTo(1 / 0.85, 1);
+  });
+
+  test("is continuous, so a pinch's many small deltas do not lurch", () => {
+    // A trackpad pinch fires a stream of events with deltas in the single digits. A fixed
+    // step per event would zoom by 0.85^30 across one gesture, which is 100x.
+    expect(wheelFactor(-4)).toBeGreaterThan(0.98);
+    expect(wheelFactor(-4)).toBeLessThan(1);
+
+    // Ten small ones compose to about one big one, which is what "continuous" has to mean
+    // for a gesture that can be delivered either way.
+    const ten = Array.from({ length: 10 }, () => wheelFactor(-10)).reduce((a, b) => a * b, 1);
+    expect(ten).toBeCloseTo(wheelFactor(-100), 6);
+  });
+
+  test("caps a single event, because some devices send one enormous delta", () => {
+    // Chrome reports deltaMode 0 in pixels, but a page-mode wheel or a coarse driver can
+    // deliver several thousand at once, and one event should not cross the whole range.
+    expect(wheelFactor(-100000)).toBeGreaterThanOrEqual(0.25);
+    expect(wheelFactor(100000)).toBeLessThanOrEqual(4);
   });
 });

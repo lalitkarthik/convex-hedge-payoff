@@ -153,6 +153,7 @@ export default function AnalyseScreen({
                   has to stand on the axis it is drawn against (#72). */}
               <PayoffChart
                 curve={current.curve}
+                frame={current.table}
                 forward={current.forward}
                 breakevens={current.metrics.breakevens}
               />

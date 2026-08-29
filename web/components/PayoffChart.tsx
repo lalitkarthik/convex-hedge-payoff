@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useId, useMemo, useState, type WheelEvent } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Area,
   ComposedChart,
@@ -15,7 +15,7 @@ import {
 import type { Curve } from "@/lib/types";
 import { level, price } from "@/lib/format";
 import { split } from "@/lib/curve";
-import { contain, fit, fullSpan, zoom, type Span } from "@/lib/zoom";
+import { contain, fit, fullSpan, wheelFactor, zoom, type Span } from "@/lib/zoom";
 
 /**
  * **P&L at expiry** — not "payoff". `CONTEXT.md` is explicit that both lines a trader
@@ -70,11 +70,13 @@ import { contain, fit, fullSpan, zoom, type Span } from "@/lib/zoom";
  */
 function PayoffChart({
   curve,
+  frame,
   forward,
   breakevens,
   height = 420,
 }: {
   curve: Curve;
+  frame: Curve;
   forward: number;
   breakevens: number[];
   height?: number;
@@ -94,14 +96,27 @@ function PayoffChart({
 
   const full = useMemo(() => fullSpan(curve.forward), [curve.forward]);
 
-  // `null` is "the whole curve", and it is a distinct state from a window that happens to
-  // equal the full extent: it survives the Strategy changing width underneath it, so a
-  // chart that was never zoomed keeps following the data rather than freezing on the
-  // extent it had when the first Leg was added.
+  // What the chart opens on, which is deliberately **narrower than the data**. The engine
+  // sends the curve three times wider than this so that zooming out has somewhere to go;
+  // opening on the whole of it would show every structure at a third of its useful size.
+  //
+  // Read off the table's extent rather than recomputed here. The table is published on the
+  // same response and is the frame - the engine derives both from one `_frame`, precisely
+  // so the chart and the rows beneath it cannot cover different windows. Deriving it a
+  // second time in the browser would reintroduce the disagreement that shares it.
+  const opening = useMemo(() => contain(full, fullSpan(frame.forward)), [full, frame.forward]);
+
+  // `null` is "the opening frame", and it is a distinct state from a window that happens
+  // to equal it: it survives the Strategy changing width underneath it, so a chart that
+  // was never zoomed keeps following the data rather than freezing on the extent it had
+  // when the first Leg was added.
   const [held, setHeld] = useState<Span | null>(null);
-  // Contained rather than used as held: the extent now depends on the Strategy, so a
-  // window held across an edit that narrowed the curve would hang off the end of the data.
-  const span = useMemo(() => (held === null ? full : contain(full, held)), [held, full]);
+  // Contained rather than used as held: the extent depends on the Strategy, so a window
+  // held across an edit that narrowed the curve would hang off the end of the data.
+  const span = useMemo(
+    () => (held === null ? opening : contain(full, held)),
+    [held, full, opening],
+  );
 
   const vertical = useMemo(() => fit(points, span), [points, span]);
 
@@ -119,16 +134,51 @@ function PayoffChart({
   const by = (factor: number, focus = (span.min + span.max) / 2) =>
     setHeld(zoom(full, span, factor, focus));
 
-  function onWheel(event: WheelEvent<HTMLDivElement>) {
-    // The Forward under the pointer, so the curve grows around the cursor. `currentTarget`
-    // is the plot wrapper; the axis gutters are outside it, so this stays honest at the
-    // edges without knowing Recharts' margins.
-    const box = event.currentTarget.getBoundingClientRect();
-    const at = (event.clientX - box.left) / box.width;
-    by(event.deltaY < 0 ? 0.85 : 1 / 0.85, span.min + at * (span.max - span.min));
-  }
+  /**
+   * Wheel and pinch, attached by hand rather than with `onWheel`.
+   *
+   * **React's wheel listener is passive**, so `preventDefault` inside an `onWheel` prop
+   * is ignored - with a console warning, if anyone looks. A trackpad pinch arrives as a
+   * `wheel` event carrying `ctrlKey`, and its default action is to zoom the *browser*: so
+   * pinching to magnify the payoff curve magnified the whole of Chrome instead, chart and
+   * chrome and all. The listener has to be non-passive to say no to that, and that means
+   * `addEventListener` with an explicit option.
+   *
+   * The effect re-attaches whenever the window or the extent changes, which is cheap - it
+   * is an add and a remove, and the alternative is reading both through refs to keep a
+   * stale closure honest.
+   */
+  const plot = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = plot.current;
+    if (node === null) return;
 
-  const zoomed = held !== null && span.max - span.min < full.max - full.min;
+    function onWheel(event: globalThis.WheelEvent) {
+      // Unconditional, and before anything else: a pinch that scrolled the page while
+      // also zooming the chart would be worse than either on its own.
+      event.preventDefault();
+
+      // The Forward under the pointer, so the curve grows around the cursor. The plot
+      // wrapper is exactly the plot's width - the axis gutters are outside it - so this
+      // stays honest at the edges without knowing Recharts' margins.
+      const box = node!.getBoundingClientRect();
+      const at = box.width > 0 ? (event.clientX - box.left) / box.width : 0.5;
+
+      setHeld((current) => {
+        const from = current === null ? opening : contain(full, current);
+        return zoom(full, from, wheelFactor(event.deltaY), from.min + at * (from.max - from.min));
+      });
+    }
+
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, [full, opening]);
+
+  // Enabled whenever a window is being held, in either direction. It used to test that
+  // the window was *narrower* than the extent, which was the same thing back when the
+  // chart opened at full extent and zooming out was impossible. It is now possible, and a
+  // trader who has zoomed out needs the way back at least as much.
+  const zoomed = held !== null;
 
   return (
     <div className="chart">
@@ -153,10 +203,10 @@ function PayoffChart({
         </button>
       </div>
 
-      {/* `onWheel` here rather than on the chart: Recharts owns its own SVG events, and
-          the wrapper is also exactly the plot's width, which is what the focus maths
-          needs. */}
-      <div className="chart-plot" style={{ height }} onWheel={onWheel}>
+      {/* The listener goes on this wrapper rather than on the chart: Recharts owns its
+          own SVG events, and the wrapper is also exactly the plot's width, which is what
+          the focus maths needs. Attached in an effect - see above for why. */}
+      <div className="chart-plot" style={{ height }} ref={plot}>
       <ResponsiveContainer>
         <ComposedChart data={shaped} margin={{ top: 26, right: 12, bottom: 18, left: 4 }}>
           <defs>

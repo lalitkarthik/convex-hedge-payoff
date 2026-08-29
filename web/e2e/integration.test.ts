@@ -429,25 +429,79 @@ describe("the Leg editor", () => {
 });
 
 describe("the payoff chart", () => {
-  it("opens on the whole curve and zooms into it", async () => {
+  const chartRange = () => page.locator(".chart-range");
+  const chartWidth = async () => {
+    const [lo, hi] = (await chartRange().innerText())
+      .split("–")
+      .map((s) => Number(s.replace(/[^\d.]/g, "")));
+    return hi! - lo!;
+  };
+
+  it("opens on the frame and zooms into it", async () => {
     await page.goto(
       `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
       { waitUntil: "networkidle" },
     );
 
-    // The curve is 400 points across the Forward +/-6%, so it opens on about 3,000 points
-    // of index either side of 25,219.
-    const range = page.locator(".chart-range");
-    const width = async () => {
-      const [lo, hi] = (await range.innerText()).split("–").map((s) => Number(s.replace(/[^\d.]/g, "")));
-      return hi! - lo!;
-    };
-
-    const opened = await width();
+    // The frame is the Forward +/-6%, so it opens on about 3,000 points of index. The
+    // *curve* is three times that - see the next test, which is the whole reason the two
+    // are different numbers.
+    const opened = await chartWidth();
     expect(opened).toBeGreaterThan(2000);
+    expect(opened).toBeLessThan(4000);
 
     await page.getByRole("button", { name: "zoom in" }).click();
-    expect(await width()).toBeLessThan(opened);
+    expect(await chartWidth()).toBeLessThan(opened);
+  });
+
+  it("zooms out past the view it opened on", async () => {
+    // The reported bug. The chart used to open at the full extent of the data, so both
+    // zoom-out controls were no-ops from the first frame - there was nothing outside the
+    // opening view to move into, and the clamp that keeps the window inside the data (the
+    // right rule) made that look like a dead button.
+    await page.getByRole("button", { name: "reset zoom" }).click();
+    const opened = await chartWidth();
+
+    await page.getByRole("button", { name: "zoom out" }).click();
+    const out = await chartWidth();
+    expect(out).toBeGreaterThan(opened);
+
+    // And it keeps going, rather than stopping one step later. The engine sends three
+    // times the frame, so the window has real room rather than a rounding margin.
+    for (let i = 0; i < 8; i++) await page.getByRole("button", { name: "zoom out" }).click();
+    expect(await chartWidth()).toBeGreaterThan(opened * 2);
+
+    await page.getByRole("button", { name: "reset zoom" }).click();
+  });
+
+  it("zooms itself on a trackpad pinch rather than letting the browser zoom", async () => {
+    // A pinch arrives as a `wheel` event carrying `ctrlKey`, and its default action is to
+    // zoom the browser. React attaches its wheel listener passively, so the `onWheel`
+    // prop this used to use *could not* cancel it however it was written - pinching to
+    // magnify the curve magnified the whole of Chrome, chart and chrome together.
+    const before = await chartWidth();
+
+    const prevented = await page.evaluate(() => {
+      const node = document.querySelector(".chart-plot")!;
+      const box = node.getBoundingClientRect();
+      const event = new WheelEvent("wheel", {
+        deltaY: -240,
+        ctrlKey: true,
+        cancelable: true,
+        bubbles: true,
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+      });
+      node.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+
+    // The claim is precisely that the page's own zoom was cancelled. A test that only
+    // checked the chart had zoomed would have passed against the broken version too.
+    expect(prevented).toBe(true);
+    expect(await chartWidth()).toBeLessThan(before);
+
+    await page.getByRole("button", { name: "reset zoom" }).click();
   });
 
   it("refits the vertical axis to what is visible", async () => {

@@ -60,6 +60,28 @@ export function zoom(full: Span, current: Span, factor: number, focus: number): 
 }
 
 /**
+ * How much to widen or narrow the window for one wheel or pinch event.
+ *
+ * **Exponential in the delta, so that it composes.** The old rule was a flat 0.85 per
+ * event, which is right for a mouse wheel - one notch, one step - and wrong for a
+ * trackpad, which delivers a pinch as a stream of thirty or so events with deltas in the
+ * single digits. Thirty flat steps is 0.85^30, about a hundredfold, from one gesture.
+ *
+ * With `exp(delta * k)` the same total delta gives the same total zoom however it is
+ * chopped up, because the exponents add. A notch of 100 still lands on 0.85, so nothing a
+ * mouse user had is changed.
+ *
+ * Capped, because `deltaMode` is not always pixels: a page-mode wheel or a coarse driver
+ * can deliver thousands in one event, and no single event should cross the whole range.
+ */
+/** `exp(-100 * k) = 0.85` - the step this had as a constant, before pinch made it vary. */
+const WHEEL_K = 0.0016;
+
+export function wheelFactor(delta: number): number {
+  return Math.min(4, Math.max(0.25, Math.exp(delta * WHEEL_K)));
+}
+
+/**
  * A held window, put back inside the data.
  *
  * `zoom` already keeps its result inside the full extent, so for a long time nothing
