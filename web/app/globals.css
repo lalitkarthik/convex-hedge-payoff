@@ -495,6 +495,18 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
    Dimming says "this is a moment ago"; an empty table says "something broke". */
 .main.pending { opacity: 0.55; transition: opacity 120ms ease-in; }
 
+/* The engine's refusal, where the metrics would be. It replaces the numbers and leaves
+   the curve, which is still a real answer about a real Strategy - see `AnalyseScreen`. */
+.problem {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--put);
+  border-radius: var(--radius);
+  background: var(--itm);
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .analyse,
 .back {
   display: inline-block;
