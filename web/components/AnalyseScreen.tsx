@@ -186,7 +186,7 @@ export default function AnalyseScreen({
                 it would cost more than it says.
               */}
               {state.problem ? (
-                <p className="problem" role="status">
+                <p className="refusal" role="status">
                   {state.problem}
                 </p>
               ) : (

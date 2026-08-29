@@ -496,8 +496,10 @@ table.grid tr.here td { background: var(--atm); font-weight: 600; }
 .main.pending { opacity: 0.55; transition: opacity 120ms ease-in; }
 
 /* The engine's refusal, where the metrics would be. It replaces the numbers and leaves
-   the curve, which is still a real answer about a real Strategy - see `AnalyseScreen`. */
-.problem {
+   the curve, which is still a real answer about a real Strategy - see `AnalyseScreen`.
+   Named `.refusal` and not `.problem`: `LinkProblem` owns that one, and this is an
+   inline note under a chart rather than a page that replaced the chart. */
+.refusal {
   margin: 0;
   padding: 10px 12px;
   border: 1px solid var(--put);

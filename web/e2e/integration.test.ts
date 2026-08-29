@@ -81,6 +81,27 @@ describe("the Chain page", () => {
     expect(starred).toContain("25,200");
   });
 
+  it("washes the in-the-money half, and flips sides at the forward", async () => {
+    // The wash says "this printed price is probably not live": the model reproduces
+    // `last` on 100% of out-of-the-money rows and 6.2% of in-the-money ones.
+    //
+    // It flips between 25,200 and 25,250, which is where the *forward* sits (25,219.12)
+    // and not where spot does (25,100.25). Reading the call side alone would pass with
+    // either reference; reading both at both strikes is what pins it, because Spot would
+    // have flipped a full strike earlier.
+    const washed = async (strike: string, side: "CE" | "PE") => {
+      const cells = page.locator(`tr:has(td.strike:text-is("${strike}")) td.num`);
+      // Calls occupy the first four numeric cells of a row, puts the last four.
+      const at = side === "CE" ? 0 : (await cells.count()) - 1;
+      return ((await cells.nth(at).getAttribute("class")) ?? "").includes("itm");
+    };
+
+    expect(await washed("25,200", "CE")).toBe(true);
+    expect(await washed("25,200", "PE")).toBe(false);
+    expect(await washed("25,250", "CE")).toBe(false);
+    expect(await washed("25,250", "PE")).toBe(true);
+  });
+
   it("puts a picked Leg in the address bar, where it survives a reload", async () => {
     await page.locator("tr.at-the-money .bs button.sell").first().click();
     await page.waitForFunction(() => window.location.search.includes("legs="));
@@ -89,6 +110,28 @@ describe("the Chain page", () => {
 
     await page.reload({ waitUntil: "networkidle" });
     expect(await page.locator(".legs .leg").count()).toBe(1);
+  });
+
+  it("lights the button for a contract already held, and only that one", async () => {
+    // The Chain has had the Strategy in its hands all along and rendered none of it.
+    // B and S light independently, because bought and sold are different positions
+    // rather than one position with a sign.
+    const buttons = page.locator("tr.at-the-money .bs").first();
+
+    expect(await buttons.locator("button.sell").getAttribute("class")).toContain("on");
+    expect(await buttons.locator("button.buy").getAttribute("class")).not.toContain("on");
+  });
+
+  it("takes the Leg back off when the lit button is clicked", async () => {
+    // A button that showed state it refused to let you change would be worse than one
+    // that showed none.
+    await page.locator("tr.at-the-money .bs button.sell").first().click();
+    await page.waitForFunction(() => !window.location.search.includes("legs=25200CE"));
+
+    expect(
+      await page.locator("tr.at-the-money .bs button.sell").first().getAttribute("class"),
+    ).not.toContain("on");
+    expect(await page.locator(".legs .leg").count()).toBe(0);
   });
 });
 
@@ -102,7 +145,7 @@ describe("the Analyse page", () => {
       { waitUntil: "networkidle" },
     );
 
-    expect(await page.locator(".legs .leg").count()).toBe(2);
+    expect(await page.locator(".leg-card").count()).toBe(2);
     await page.waitForSelector("svg.recharts-surface");
   });
 
@@ -173,59 +216,130 @@ describe("the strike slider", () => {
     // 68 of the anchor's 91 strikes quote a call *and* carry a volatility - the two
     // conditions the engine applies. The day's grid is 94 and the minute's chain is 91,
     // so a slider reading either would stop on strikes that cannot be priced.
-    const slider = page.locator(".strike-slider input[type=range]");
-    expect(await slider.getAttribute("max")).toBe("67");
-    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("68 quoted");
+    //
+    // Every Leg has its own slider now, and the two ladders genuinely differ: 68 rungs
+    // for the call, 64 for the put. One shared ladder would put a call on a put-only
+    // strike, which is 50 of the anchor's 91.
+    const sliders = page.locator(".leg-card .strike-slider");
+    expect(await sliders.count()).toBe(2);
 
-    // It opens on the first Leg, pointed at the strike that Leg actually holds.
-    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,200");
+    expect(await sliders.nth(0).locator("input[type=range]").getAttribute("max")).toBe("67");
+    expect(await sliders.nth(0).locator(".time-ends").innerText()).toContain("68 quoted");
+    expect(await sliders.nth(1).locator(".time-ends").innerText()).toContain("64 quoted");
   });
 
-  it("moves the Leg, and drops the Entry Premium so the engine reprices", async () => {
-    // The correctness assertion of this feature. `entry_premium` is optional on the
-    // wire and absent means "read the Chain's last". Carried, 344.05 would be honoured
-    // at the new strike and the published Breakeven would be wrong with nothing saying so.
-    await page.locator(".strike-slider input[type=range]").focus();
+  it("moves the Leg without re-rendering the page", async () => {
+    // The complaint this work exists for, asserted the only way that cannot be faked:
+    // stash something on `window` that only a document render can destroy. Editing used
+    // to call `router.replace`, which re-runs the server component - four backend calls
+    // and the whole tree replaced. It writes `history.replaceState` now, so the sentinel
+    // has to survive the drag.
+    await page.evaluate(() => {
+      (window as unknown as { alive: number }).alive = 1234;
+    });
+
+    await page.locator(".leg-card").nth(0).locator("input[type=range]").focus();
     await page.keyboard.press("ArrowRight");
     await page.waitForFunction(() => window.location.search.includes("25250CE"));
 
+    expect(await page.evaluate(() => (window as unknown as { alive?: number }).alive)).toBe(1234);
+  });
+
+  it("reprices the moved Leg from the Chain rather than blanking it", async () => {
+    // The premium used to be dropped here so the server would re-read it, which left the
+    // box on screen empty. Analyse holds the Chain, so it writes the price the server
+    // would have found - and the guarantee that matters is unchanged: the *old* strike's
+    // 344.05 must never survive the move.
     const url = decodeURIComponent(page.url());
-    expect(url).toContain("25250CE10FEB26S1");
-    expect(url).not.toContain("25250CE10FEB26S1@"); // the premium is gone, not zeroed
-    expect(url).toContain("25200PE10FEB26S1@326.7"); // the Leg not moved keeps its own
+    expect(url).toContain("25250CE10FEB26S1@317.75"); // the 25,250 call's own last
+    expect(url).not.toContain("@344.05"); //             the 25,200 call's, left behind
+    expect(url).toContain("25200PE10FEB26S1@326.7"); //  the Leg not moved keeps its own
 
     // A different Strategy, so different figures. The short straddle's published 670.75
     // belongs to two Legs at one strike; this is a strangle, and its premium is the
-    // 25,250 call's own last (317.75) plus the put's 326.70. If 344.05 had been carried
-    // across, this would read 670.75 still and look untouched.
+    // 25,250 call's last plus the put's. If 344.05 had been carried across, this would
+    // read 670.75 still and look untouched.
     const metrics = await page.locator("table.kv").innerText();
-    expect(metrics).toContain("644.45");
+    expect(metrics).toContain("644.45"); //    317.75 + 326.70
     expect(metrics).toContain("24,555.55"); // 25,200 - 644.45
     expect(metrics).toContain("25,894.45"); // 25,250 + 644.45
 
-    // And the panel must not fill the empty premium with a 0, which would read as a
-    // position entered for nothing rather than one priced off the Chain.
-    const premiums = await page.locator('.legs input[aria-label="entry premium"]').all();
-    expect(await premiums[0]!.inputValue()).toBe("");
-    expect(await premiums[1]!.inputValue()).toBe("326.7");
+    // And the box shows the number rather than a placeholder, which is the bug reported.
+    const premiums = page.locator('.leg-card input[aria-label="entry premium"]');
+    expect(await premiums.nth(0).inputValue()).toBe("317.75");
+    expect(await premiums.nth(1).inputValue()).toBe("326.7");
   });
 
   it("reproduces the moved Strategy from the URL alone", async () => {
-    // Same property #32 exists for, now that a second control writes the address bar.
-    const moved = page.url();
-    await page.goto(moved, { waitUntil: "networkidle" });
+    // Same property #32 exists for. `history.replaceState` keeps the page from
+    // re-rendering, and this is what proves it did not also stop the link from working.
+    await page.goto(page.url(), { waitUntil: "networkidle" });
 
-    expect(await page.locator(".legs .leg").count()).toBe(2);
-    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,250");
+    expect(await page.locator(".leg-card").count()).toBe(2);
+    expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("25,250");
+    expect(await page.locator("table.kv").innerText()).toContain("644.45");
+  });
+});
+
+describe("the Leg editor", () => {
+  it("flips a Leg between bought and sold", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    // The straddle is sold, so its premium is a credit. Buying both Legs turns the same
+    // 670.75 into a debit - the clearest signal that direction reached the engine.
+    expect(await page.locator("table.kv").innerText()).toContain("credit");
+
+    await page.locator(".leg-card").nth(0).getByRole("button", { name: "B", exact: true }).click();
+    await page.locator(".leg-card").nth(1).getByRole("button", { name: "B", exact: true }).click();
+    await page.waitForFunction(() => window.location.search.includes("25200CE10FEB26B1"));
+
+    expect(await page.locator("table.kv").innerText()).toContain("debit");
   });
 
-  it("points at whichever Leg the trader picks", async () => {
-    // The put's ladder is not the call's - 64 strikes against 68 at this minute - so
-    // selecting the other Leg has to rebuild it, not just move the thumb.
-    await page.locator(".legs .leg").nth(1).click();
+  it("flips a Leg between CE and PE, snapping to a strike that side quotes", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
 
-    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("PE");
-    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("64 quoted");
+    await page.locator(".leg-card").nth(0).getByRole("button", { name: "PE", exact: true }).click();
+    await page.waitForFunction(() => !window.location.search.includes("25200CE"));
+
+    // Both Legs are puts now, and the ladder under the flipped one is the put ladder.
+    expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("PE");
+    expect(
+      await page.locator(".leg-card .strike-slider .time-ends").nth(0).innerText(),
+    ).toContain("64 quoted");
+  });
+
+  it("adds a Leg at the money without going back to the Chain", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    await page.getByRole("button", { name: "+ Add a Leg" }).click();
+    await page.waitForFunction(() => window.location.search.includes("25200CE10FEB26B1"));
+
+    // A bought call at 25,200 - the strike nearest the *Forward* of 25,219.12, which is
+    // the rule the star and the in-the-money wash both follow. Nearest Spot would be
+    // 25,100, and the two disagree by a whole strike at this minute.
+    expect(await page.locator(".leg-card").count()).toBe(3);
+    expect(await page.locator(".leg-card .leg-name").nth(2).innerText()).toContain("25,200 CE");
+    expect(
+      await page.locator('.leg-card input[aria-label="entry premium"]').nth(2).inputValue(),
+    ).toBe("344.05");
+  });
+
+  it("removes a Leg", async () => {
+    await page.locator(".leg-card .drop").nth(2).click();
+    await page.waitForFunction(() => !window.location.search.includes("25200CE10FEB26B1"));
+
+    expect(await page.locator(".leg-card").count()).toBe(2);
+    expect(await page.locator("table.kv").innerText()).toContain("670.75");
   });
 });
 
