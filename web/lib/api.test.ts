@@ -123,7 +123,12 @@ describe("the requests themselves", () => {
 
     await postAnalysis({
       moment: "2026-01-27T06:30:00",
-      legs: [{ strike: 25200, option_type: "CE", direction: -1, quantity: 1 }],
+      // The Expiry is required and lives on the Leg (#71): a strike and a side name two
+      // different instruments once two series trade. This case was written before that
+      // landed and the typechecker could not see the file to say so.
+      legs: [
+        { strike: 25200, option_type: "CE", expiry: "10FEB26", direction: -1, quantity: 1 },
+      ],
     });
 
     expect(sent?.method).toBe("POST");

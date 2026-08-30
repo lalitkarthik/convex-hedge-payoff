@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-
 import { nearestIndex } from "@/lib/strikes";
 import { strike as fmtStrike } from "@/lib/format";
 import type { OptionType } from "@/lib/types";
@@ -15,15 +13,14 @@ import type { OptionType } from "@/lib/types";
  * only. A `min`/`max`/`step` slider would look right and stop on strikes the engine
  * cannot price. See `lib/strikes.ts` - every rung here is one `/analyse` can answer.
  *
- * **It commits on release, not on every tick.** This is the one place it departs from
- * `TimeControl`, which is fully controlled and whose thumb only advances once the server
- * answers. That is fine for a control the trader nudges; dragging across twenty strikes
- * would be twenty navigations and sixty uncached backend calls, with the thumb snapping
- * backwards each time a slower one landed. So the drag is local and the URL is written
- * once, when the pointer or the key comes up.
- *
- * The keyboard case is not decoration: arrow keys fire `onChange` and never a pointer
- * event, so without `onKeyUp` this would be draggable but not operable.
+ * **It used to commit on release, and no longer needs to.** That existed because a tick
+ * cost a navigation and four backend calls, so dragging across twenty strikes meant twenty
+ * page renders with the thumb snapping backwards each time a slower one landed. A tick now
+ * costs one throttled `POST /analyse` and no render at all, so the value goes up on every
+ * change and the local drag state, the `onPointerUp`/`onKeyUp`/`onBlur` trio and the
+ * keyboard special case all went with it. The component is fully controlled again, like
+ * `TimeControl`, and the reason the two differed has been removed rather than worked
+ * around.
  */
 export default function StrikeSlider({
   strikes,
@@ -38,24 +35,18 @@ export default function StrikeSlider({
   onCommit: (strike: number) => void;
   disabled?: boolean;
 }) {
-  // The committed position comes from the server, through the URL. `dragging` is the
-  // only local state, and it exists for the length of one gesture.
-  const committed = nearestIndex(strikes, strike);
-  const [dragging, setDragging] = useState<number | null>(null);
-  const index = dragging ?? committed;
-
-  const last = strikes.length - 1;
-  const shown = strikes[index] ?? strike;
-  const idle = disabled || strikes.length === 0;
-
-  function commit(next: number) {
-    setDragging(null);
-    const chosen = strikes[next];
-    if (chosen !== undefined && chosen !== strike) onCommit(chosen);
-  }
-
   if (strikes.length === 0) {
     return <div className="empty">Nothing is quoted for this side at this minute.</div>;
+  }
+
+  // Nearest rather than `indexOf`: a Leg's strike can legitimately be off the ladder, if
+  // it was built at a minute that quoted it and the time control has since moved.
+  const index = nearestIndex(strikes, strike);
+  const last = strikes.length - 1;
+
+  function commit(next: number) {
+    const chosen = strikes[next];
+    if (chosen !== undefined && chosen !== strike) onCommit(chosen);
   }
 
   return (
@@ -64,7 +55,7 @@ export default function StrikeSlider({
         <button
           className="step"
           onClick={() => commit(index - 1)}
-          disabled={idle || index <= 0}
+          disabled={disabled || index <= 0}
           aria-label="lower strike"
         >
           ‹
@@ -74,27 +65,18 @@ export default function StrikeSlider({
           min={0}
           max={last}
           value={index}
-          disabled={idle}
-          // Moves the label only. Nothing is fetched until the gesture ends.
-          onChange={(event) => setDragging(Number(event.target.value))}
-          onPointerUp={() => commit(index)}
-          onKeyUp={() => commit(index)}
-          // A pointer released outside the track still ends the gesture; without this
-          // the thumb would stay parked on an uncommitted strike.
-          onBlur={() => commit(index)}
+          disabled={disabled}
+          onChange={(event) => commit(Number(event.target.value))}
           aria-label={`strike for the ${optionType} Leg`}
         />
         <button
           className="step"
           onClick={() => commit(index + 1)}
-          disabled={idle || index >= last}
+          disabled={disabled || index >= last}
           aria-label="higher strike"
         >
           ›
         </button>
-        <span className="stat-value strike-now">
-          {fmtStrike(shown)} {optionType}
-        </span>
       </div>
       <div className="time-ends">
         <span>{fmtStrike(strikes[0]!)}</span>

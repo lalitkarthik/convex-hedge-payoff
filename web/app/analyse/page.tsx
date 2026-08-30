@@ -2,6 +2,7 @@ import AnalyseScreen from "@/components/AnalyseScreen";
 import LinkProblem from "@/components/LinkProblem";
 import { ApiError, getChain, getSession, getSummary, postAnalysis } from "@/lib/api";
 import { LegsUrlError } from "@/lib/legs-url";
+import { encodeLegs } from "@/lib/legs-url";
 import { decodeLegs, one, pickView } from "@/lib/strategy-url";
 
 /**
@@ -29,6 +30,14 @@ import { decodeLegs, one, pickView } from "@/lib/strategy-url";
  * per-minute *and* per-side, it has holes in it, and `strike_min`/`strike_max` describe
  * the whole day. The 91 rows are now the thing being used rather than the thing being
  * reduced, and they join the same `Promise.all`, so this costs a payload and not a wave.
+ *
+ * **This page answers the first question and then stops asking.** The Strategy is editable
+ * on the screen now, and every edit after the first is a `POST /analyse` the browser makes
+ * itself - so this file renders once per *link* rather than once per gesture. The `key`
+ * below is what joins the two halves: a genuinely new Strategy in the address bar remounts
+ * the screen against the server's answer, and the client's own edits, which are written
+ * with `history.replaceState`, never reach here at all. So whoever spoke last wins, and
+ * nothing has to reconcile them.
  */
 
 export const dynamic = "force-dynamic";
@@ -99,6 +108,7 @@ export default async function AnalysePage({
 
   return (
     <AnalyseScreen
+      key={encodeLegs(legs)}
       session={session}
       summary={summary}
       analysis={analysis}

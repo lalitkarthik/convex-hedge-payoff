@@ -81,6 +81,32 @@ describe("the Chain page", () => {
     expect(starred).toContain("25,200");
   });
 
+  it("washes the in-the-money half, and flips sides at the forward", async () => {
+    // The wash says "this printed price is probably not live": the model reproduces
+    // `last` on 100% of out-of-the-money rows and 6.2% of in-the-money ones.
+    //
+    // It flips between 25,200 and 25,250, which is where the *forward* sits (25,219.12)
+    // and not where spot does (25,100.25). Reading the call side alone would pass with
+    // either reference; reading both at both strikes is what pins it, because Spot would
+    // have flipped a full strike earlier.
+    //
+    // `has-text` and not `text-is`: the starred cell reads "25,200 ★", so an exact match
+    // finds nothing and waits five seconds to say so. Strikes are all six characters, so
+    // a substring match is still unique to one row.
+    //
+    // The row is split on the shared IV column, which is the divider between the two
+    // sides - the alternative is counting numeric cells in from each end, and the count
+    // is not constant, because an unquoted side renders hatched cells instead.
+    const washed = async (strike: string) => {
+      const row = await page.locator(`tr:has(td.strike:has-text("${strike}"))`).first().innerHTML();
+      const [calls, puts] = row.split('class="iv"');
+      return { CE: calls!.includes("itm"), PE: puts!.includes("itm") };
+    };
+
+    expect(await washed("25,200")).toEqual({ CE: true, PE: false });
+    expect(await washed("25,250")).toEqual({ CE: false, PE: true });
+  });
+
   it("puts a picked Leg in the address bar, where it survives a reload", async () => {
     await page.locator("tr.at-the-money .bs button.sell").first().click();
     await page.waitForFunction(() => window.location.search.includes("legs="));
@@ -89,6 +115,28 @@ describe("the Chain page", () => {
 
     await page.reload({ waitUntil: "networkidle" });
     expect(await page.locator(".legs .leg").count()).toBe(1);
+  });
+
+  it("lights the button for a contract already held, and only that one", async () => {
+    // The Chain has had the Strategy in its hands all along and rendered none of it.
+    // B and S light independently, because bought and sold are different positions
+    // rather than one position with a sign.
+    const buttons = page.locator("tr.at-the-money .bs").first();
+
+    expect(await buttons.locator("button.sell").getAttribute("class")).toContain("on");
+    expect(await buttons.locator("button.buy").getAttribute("class")).not.toContain("on");
+  });
+
+  it("takes the Leg back off when the lit button is clicked", async () => {
+    // A button that showed state it refused to let you change would be worse than one
+    // that showed none.
+    await page.locator("tr.at-the-money .bs button.sell").first().click();
+    await page.waitForFunction(() => !window.location.search.includes("legs=25200CE"));
+
+    expect(
+      await page.locator("tr.at-the-money .bs button.sell").first().getAttribute("class"),
+    ).not.toContain("on");
+    expect(await page.locator(".legs .leg").count()).toBe(0);
   });
 });
 
@@ -102,7 +150,7 @@ describe("the Analyse page", () => {
       { waitUntil: "networkidle" },
     );
 
-    expect(await page.locator(".legs .leg").count()).toBe(2);
+    expect(await page.locator(".leg-card").count()).toBe(2);
     await page.waitForSelector("svg.recharts-surface");
   });
 
@@ -173,59 +221,463 @@ describe("the strike slider", () => {
     // 68 of the anchor's 91 strikes quote a call *and* carry a volatility - the two
     // conditions the engine applies. The day's grid is 94 and the minute's chain is 91,
     // so a slider reading either would stop on strikes that cannot be priced.
-    const slider = page.locator(".strike-slider input[type=range]");
-    expect(await slider.getAttribute("max")).toBe("67");
-    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("68 quoted");
+    //
+    // Every Leg has its own slider now, and the two ladders genuinely differ: 68 rungs
+    // for the call, 64 for the put. One shared ladder would put a call on a put-only
+    // strike, which is 50 of the anchor's 91.
+    const sliders = page.locator(".leg-card .strike-slider");
+    expect(await sliders.count()).toBe(2);
 
-    // It opens on the first Leg, pointed at the strike that Leg actually holds.
-    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,200");
+    expect(await sliders.nth(0).locator("input[type=range]").getAttribute("max")).toBe("67");
+    expect(await sliders.nth(0).locator(".time-ends").innerText()).toContain("68 quoted");
+    expect(await sliders.nth(1).locator(".time-ends").innerText()).toContain("64 quoted");
   });
 
-  it("moves the Leg, and drops the Entry Premium so the engine reprices", async () => {
-    // The correctness assertion of this feature. `entry_premium` is optional on the
-    // wire and absent means "read the Chain's last". Carried, 344.05 would be honoured
-    // at the new strike and the published Breakeven would be wrong with nothing saying so.
-    await page.locator(".strike-slider input[type=range]").focus();
+  it("moves the Leg without re-rendering the page", async () => {
+    // The complaint this work exists for, asserted the only way that cannot be faked:
+    // stash something on `window` that only a document render can destroy. Editing used
+    // to call `router.replace`, which re-runs the server component - four backend calls
+    // and the whole tree replaced. It writes `history.replaceState` now, so the sentinel
+    // has to survive the drag.
+    await page.evaluate(() => {
+      (window as unknown as { alive: number }).alive = 1234;
+    });
+
+    await page.locator(".leg-card").nth(0).locator("input[type=range]").focus();
     await page.keyboard.press("ArrowRight");
     await page.waitForFunction(() => window.location.search.includes("25250CE"));
 
+    expect(await page.evaluate(() => (window as unknown as { alive?: number }).alive)).toBe(1234);
+  });
+
+  it("reprices the moved Leg from the Chain rather than blanking it", async () => {
+    // The premium used to be dropped here so the server would re-read it, which left the
+    // box on screen empty. Analyse holds the Chain, so it writes the price the server
+    // would have found - and the guarantee that matters is unchanged: the *old* strike's
+    // 344.05 must never survive the move.
     const url = decodeURIComponent(page.url());
-    expect(url).toContain("25250CE10FEB26S1");
-    expect(url).not.toContain("25250CE10FEB26S1@"); // the premium is gone, not zeroed
-    expect(url).toContain("25200PE10FEB26S1@326.7"); // the Leg not moved keeps its own
+    expect(url).toContain("25250CE10FEB26S1@317.75"); // the 25,250 call's own last
+    expect(url).not.toContain("@344.05"); //             the 25,200 call's, left behind
+    expect(url).toContain("25200PE10FEB26S1@326.7"); //  the Leg not moved keeps its own
 
     // A different Strategy, so different figures. The short straddle's published 670.75
     // belongs to two Legs at one strike; this is a strangle, and its premium is the
-    // 25,250 call's own last (317.75) plus the put's 326.70. If 344.05 had been carried
-    // across, this would read 670.75 still and look untouched.
+    // 25,250 call's last plus the put's. If 344.05 had been carried across, this would
+    // read 670.75 still and look untouched.
+    //
+    // Waited for rather than read: the URL is rewritten with the gesture and the figures
+    // arrive when the throttled `/analyse` answers, so the two are never atomic.
+    await page.waitForFunction(() =>
+      document.querySelector("table.kv")?.textContent?.includes("644.45"),
+    );
     const metrics = await page.locator("table.kv").innerText();
-    expect(metrics).toContain("644.45");
+    expect(metrics).toContain("644.45"); //    317.75 + 326.70
     expect(metrics).toContain("24,555.55"); // 25,200 - 644.45
     expect(metrics).toContain("25,894.45"); // 25,250 + 644.45
 
-    // And the panel must not fill the empty premium with a 0, which would read as a
-    // position entered for nothing rather than one priced off the Chain.
-    const premiums = await page.locator('.legs input[aria-label="entry premium"]').all();
-    expect(await premiums[0]!.inputValue()).toBe("");
-    expect(await premiums[1]!.inputValue()).toBe("326.7");
+    // And the box shows the number rather than a placeholder, which is the bug reported.
+    const premiums = page.locator('.leg-card input[aria-label="entry premium"]');
+    expect(await premiums.nth(0).inputValue()).toBe("317.75");
+    expect(await premiums.nth(1).inputValue()).toBe("326.7");
   });
 
   it("reproduces the moved Strategy from the URL alone", async () => {
-    // Same property #32 exists for, now that a second control writes the address bar.
-    const moved = page.url();
-    await page.goto(moved, { waitUntil: "networkidle" });
+    // Same property #32 exists for. `history.replaceState` keeps the page from
+    // re-rendering, and this is what proves it did not also stop the link from working.
+    await page.goto(page.url(), { waitUntil: "networkidle" });
 
-    expect(await page.locator(".legs .leg").count()).toBe(2);
-    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("25,250");
+    expect(await page.locator(".leg-card").count()).toBe(2);
+    expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("25,250");
+    expect(await page.locator("table.kv").innerText()).toContain("644.45");
   });
 
-  it("points at whichever Leg the trader picks", async () => {
-    // The put's ladder is not the call's - 64 strikes against 68 at this minute - so
-    // selecting the other Leg has to rebuild it, not just move the thumb.
-    await page.locator(".legs .leg").nth(1).click();
+  it("survives its own edit, so one press drags the whole way", async () => {
+    // Reported by hand: the thumb moved one strike and stopped dead, and the mouse had to
+    // be released and pressed again for each one after that.
+    //
+    // The cause was the card's React key, which carried the strike - so every tick
+    // changed it, React unmounted and remounted the card, and the `<input type="range">`
+    // went with it. A pointer drag is captured by a DOM node; replace the node and the
+    // gesture ends. Nothing looked broken, because the tick that killed the drag was also
+    // the tick that worked.
+    //
+    // So this asserts the cause rather than the symptom: the element the pointer is
+    // holding must be the same element afterwards. A stamp on the node is the one thing a
+    // remount cannot preserve.
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
 
-    expect(await page.locator(".strike-slider .strike-now").innerText()).toContain("PE");
-    expect(await page.locator(".strike-slider .time-ends").innerText()).toContain("64 quoted");
+    const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
+    await slider.evaluate((el) => {
+      (el as HTMLElement & { stamp?: number }).stamp = 4242;
+    });
+
+    await slider.focus();
+    await page.keyboard.press("ArrowRight");
+    await page.waitForFunction(() => window.location.search.includes("25250CE"));
+
+    expect(
+      await slider.evaluate((el) => (el as HTMLElement & { stamp?: number }).stamp),
+    ).toBe(4242);
+  });
+
+  it("drags across many strikes in one gesture", async () => {
+    // The symptom itself, driven the way a trader drives it: press once, move, release.
+    //
+    // The assertion is deliberately about *how far* rather than *where*. A range input
+    // jumps its thumb to wherever the press lands before any movement is read, so the
+    // strike a gesture starts from is not the strike the Leg held - and the track is
+    // wider than the travel, because the thumb has width of its own. Pinning an exact
+    // rung means doing the browser's pixel arithmetic for it and being wrong.
+    //
+    // What the bug did was cap a gesture at one tick. So: more than one tick.
+    const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
+    const box = (await slider.boundingBox())!;
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(box.x + box.width * 0.3, y);
+    await page.mouse.down();
+    const pressed = Number(await slider.inputValue());
+
+    for (let step = 1; step <= 8; step++) {
+      await page.mouse.move(box.x + box.width * (0.3 + 0.05 * step), y);
+    }
+    await page.mouse.up();
+
+    // The value is read off the input rather than the label: it *is* the rung index, so
+    // this counts ticks directly instead of inferring them from a formatted strike.
+    const dragged = Number(await slider.inputValue());
+    expect(dragged).toBeGreaterThan(pressed + 1);
+
+    // And the Leg went with it, rather than the thumb sliding free of the Strategy.
+    const url = decodeURIComponent(page.url());
+    expect(url).not.toContain("25200CE");
+  });
+});
+
+describe("the Leg editor", () => {
+  it("flips a Leg between bought and sold", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    // The straddle is sold, so its premium is a credit. Buying both Legs turns the same
+    // 670.75 into a debit - the clearest signal that direction reached the engine.
+    expect(await page.locator("table.kv").innerText()).toContain("credit");
+
+    await page.locator(".leg-card").nth(0).getByRole("button", { name: "B", exact: true }).click();
+    await page.locator(".leg-card").nth(1).getByRole("button", { name: "B", exact: true }).click();
+
+    await page.waitForFunction(() =>
+      document.querySelector("table.kv")?.textContent?.includes("debit"),
+    );
+    expect(await page.locator("table.kv").innerText()).toContain("debit");
+  });
+
+  it("flips a Leg between CE and PE, snapping to a strike that side quotes", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    await page.locator(".leg-card").nth(0).getByRole("button", { name: "PE", exact: true }).click();
+    await page.waitForFunction(() => !window.location.search.includes("25200CE"));
+
+    // Both Legs are puts now, and the ladder under the flipped one is the put ladder.
+    expect(await page.locator(".leg-card .leg-name").nth(0).innerText()).toContain("PE");
+    expect(
+      await page.locator(".leg-card .strike-slider .time-ends").nth(0).innerText(),
+    ).toContain("64 quoted");
+  });
+
+  it("adds a Leg at the money without going back to the Chain", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    await page.getByRole("button", { name: "+ Add a Leg" }).click();
+    await page.waitForFunction(() => window.location.search.includes("25200CE10FEB26B1"));
+
+    // A bought call at 25,200 - the strike nearest the *Forward* of 25,219.12, which is
+    // the rule the star and the in-the-money wash both follow. Nearest Spot would be
+    // 25,100, and the two disagree by a whole strike at this minute.
+    expect(await page.locator(".leg-card").count()).toBe(3);
+    expect(await page.locator(".leg-card .leg-name").nth(2).innerText()).toContain("25,200 CE");
+    expect(
+      await page.locator('.leg-card input[aria-label="entry premium"]').nth(2).inputValue(),
+    ).toBe("344.05");
+  });
+
+  it("removes a Leg", async () => {
+    await page.locator(".leg-card .drop").nth(2).click();
+
+    // Waiting on the *metrics*, not on the URL. The two are deliberately not atomic: the
+    // address bar is rewritten synchronously with the gesture, and the figures arrive
+    // when the throttled `/analyse` answers. Asserting straight after the URL changed
+    // caught the panel mid-flight, showing an answer to a Strategy that existed for one
+    // frame - which is a bug in the assertion and the intended behaviour of the screen.
+    await page.waitForFunction(() =>
+      document.querySelector("table.kv")?.textContent?.includes("670.75"),
+    );
+
+    expect(await page.locator(".leg-card").count()).toBe(2);
+  });
+});
+
+describe("the payoff chart", () => {
+  const chartRange = () => page.locator(".chart-range");
+  const chartText = () => chartRange().innerText();
+  const chartWidth = async () => {
+    const [lo, hi] = (await chartText())
+      .split("–")
+      .map((s) => Number(s.replace(/[^\d.]/g, "")));
+    return hi! - lo!;
+  };
+
+  /**
+   * Wait for the window to actually be redrawn before measuring it.
+   *
+   * Setting state is not rendering. A dispatched wheel event returns the moment its
+   * listeners have run, and reading the label straight afterwards is a separate
+   * round-trip that can easily win the race against React - which it did, reporting the
+   * pre-pinch width and failing a fix that worked. Clicks happen to be slow enough to
+   * hide this, which makes it the more dangerous kind of flake: it would have shown up
+   * later, on a different test, on someone else's machine.
+   */
+  const rangeChangedFrom = async (before: string) => {
+    await page.waitForFunction(
+      (was) => document.querySelector(".chart-range")?.textContent !== was,
+      before,
+      { timeout: 4000 },
+    );
+  };
+
+  it("opens on the frame and zooms into it", async () => {
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    // The frame is the Forward +/-6%, so it opens on about 3,000 points of index. The
+    // *curve* is three times that - see the next test, which is the whole reason the two
+    // are different numbers.
+    const opened = await chartWidth();
+    expect(opened).toBeGreaterThan(2000);
+    expect(opened).toBeLessThan(4000);
+
+    await page.getByRole("button", { name: "zoom in" }).click();
+    expect(await chartWidth()).toBeLessThan(opened);
+  });
+
+  it("zooms out past the view it opened on", async () => {
+    // The reported bug. The chart used to open at the full extent of the data, so both
+    // zoom-out controls were no-ops from the first frame - there was nothing outside the
+    // opening view to move into, and the clamp that keeps the window inside the data (the
+    // right rule) made that look like a dead button.
+    await page.getByRole("button", { name: "reset zoom" }).click();
+    const opened = await chartWidth();
+
+    const before = await chartText();
+    await page.getByRole("button", { name: "zoom out" }).click();
+    await rangeChangedFrom(before);
+    const out = await chartWidth();
+    expect(out).toBeGreaterThan(opened);
+
+    // And it keeps going, rather than stopping one step later. The engine sends three
+    // times the frame, so the window has real room rather than a rounding margin.
+    for (let i = 0; i < 8; i++) await page.getByRole("button", { name: "zoom out" }).click();
+    expect(await chartWidth()).toBeGreaterThan(opened * 2);
+
+    await page.getByRole("button", { name: "reset zoom" }).click();
+  });
+
+  it("zooms itself on a trackpad pinch rather than letting the browser zoom", async () => {
+    // A pinch arrives as a `wheel` event carrying `ctrlKey`, and its default action is to
+    // zoom the browser. React attaches its wheel listener passively, so the `onWheel`
+    // prop this used to use *could not* cancel it however it was written - pinching to
+    // magnify the curve magnified the whole of Chrome, chart and chrome together.
+    const before = await chartWidth();
+    const label = await chartText();
+
+    const prevented = await page.evaluate(() => {
+      const node = document.querySelector(".chart-plot")!;
+      const box = node.getBoundingClientRect();
+      const event = new WheelEvent("wheel", {
+        deltaY: -240,
+        ctrlKey: true,
+        cancelable: true,
+        bubbles: true,
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+      });
+      node.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+
+    // The claim is precisely that the page's own zoom was cancelled. A test that only
+    // checked the chart had zoomed would have passed against the broken version too.
+    expect(prevented).toBe(true);
+
+    await rangeChangedFrom(label);
+    expect(await chartWidth()).toBeLessThan(before);
+
+    await page.getByRole("button", { name: "reset zoom" }).click();
+  });
+
+  it("refits the vertical axis to what is visible", async () => {
+    // The reason zoom is worth having. A short straddle makes 670 points across an axis
+    // 3,000 wide, so at full extent it is nearly a flat line - zooming without refitting
+    // the y-axis would show the same flat line, larger.
+    // `allTextContents`, not `allInnerTexts`: these ticks are SVG `<text>` nodes, and SVG
+    // elements have no `innerText` at all - so the inner-text form hands back a row of
+    // undefineds rather than an empty list, and fails as a TypeError inside the map
+    // instead of as a missing element.
+    const ticks = async () =>
+      (await page.locator(".recharts-yAxis .recharts-cartesian-axis-tick-value").allTextContents())
+        .map((t) => Number((t ?? "").replace(/[^\d.-]/g, "")))
+        .filter((n) => Number.isFinite(n));
+
+    const before = await ticks();
+    expect(before.length).toBeGreaterThan(1);
+
+    for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "zoom in" }).click();
+    const after = await ticks();
+    expect(after.length).toBeGreaterThan(1);
+
+    // An axis that did not refit would read the same numbers back, so this fails loudly
+    // rather than trivially passing on an empty list - which is what the length checks
+    // above are for.
+    const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
+    expect(spread(after)).toBeLessThan(spread(before));
+  });
+
+  it("goes back to the whole curve, and only offers to when zoomed", async () => {
+    const reset = page.getByRole("button", { name: "reset zoom" });
+    expect(await reset.isDisabled()).toBe(false);
+
+    await reset.click();
+    expect(await reset.isDisabled()).toBe(true);
+  });
+
+  /*
+   * Where the two fills sit relative to the zero line, read in **one frame**.
+   *
+   * Separate locator calls are separate round-trips, and the vertical axis refits
+   * whenever the curve changes - so measuring the areas from one render and the zero
+   * line from the next reports a gap that was never on screen. That is a flaw in the
+   * assertion rather than in the chart, and it only shows up on the test that edits.
+   *
+   * The zero line is picked by shape rather than by position: it is the horizontal
+   * reference line, where the Forward and the Breakevens are vertical. Taking the first
+   * one would depend on declaration order in a component nobody would think to check
+   * after adding a reference line.
+   */
+  const geometry = () =>
+    page.evaluate(() => {
+      const svg = document.querySelector("svg.recharts-surface")!;
+      const areas = Array.from(svg.querySelectorAll(".recharts-area-area"));
+      const lines = Array.from(svg.querySelectorAll(".recharts-reference-line line"));
+      const flat = lines
+        .map((line) => line.getBoundingClientRect())
+        .find((box) => box.width > box.height);
+
+      return {
+        areas: areas.length,
+        gainBottom: areas[0]?.getBoundingClientRect().bottom ?? null,
+        lossTop: areas[1]?.getBoundingClientRect().top ?? null,
+        zero: flat?.top ?? null,
+      };
+    });
+
+  it("meets the axis exactly, with no band of profit painted as loss", async () => {
+    // Reported three times, and the first two fixes were arithmetically right and still
+    // wrong on screen. The colour used to come from a gradient whose boundary was a
+    // fraction of the filled shape's bounding box - the browser's geometry, not
+    // something this code could see - so it drifted with padding, with zoom, and with a
+    // repaint that never happened.
+    //
+    // Two clamped Areas now, so the assertion is about *shape* rather than an offset:
+    // the green fill must not extend below the zero line, and the red must not extend
+    // above it. That needs no knowledge of Recharts' internals, and it is the property a
+    // trader is actually looking at.
+    await page.goto(
+      `${BASE}/analyse?moment=${encodeURIComponent(ANCHOR)}&legs=${encodeURIComponent(STRADDLE)}`,
+      { waitUntil: "networkidle" },
+    );
+
+    const box = await geometry();
+    expect(box.areas).toBe(2);
+
+    // One pixel of slack for stroke width and subpixel rounding. The band being guarded
+    // against was 3.6px and grew with the padding, so this is nowhere near it.
+    expect(box.gainBottom!).toBeLessThanOrEqual(box.zero! + 1);
+    expect(box.lossTop!).toBeGreaterThanOrEqual(box.zero! - 1);
+  });
+
+  it("fades each fill out as it approaches the axis", async () => {
+    // Strongest where the position is furthest from breaking even, invisible where it is
+    // level. Both gradients are read, because they run in opposite directions - the gain
+    // fades downward toward the axis and the loss fades upward to it, and a copy-paste
+    // that pointed both the same way would leave one of them solid against the axis.
+    const opacity = async (which: "gain" | "loss", stop: 0 | 1) =>
+      Number(
+        await page
+          .locator(`svg.recharts-surface linearGradient[id$="-${which}"] stop`)
+          .nth(stop)
+          .getAttribute("stop-opacity"),
+      );
+
+    expect(await opacity("gain", 0)).toBeGreaterThan(await opacity("gain", 1));
+    expect(await opacity("loss", 0)).toBeLessThan(await opacity("loss", 1));
+
+    // And it really does reach nothing, rather than merely being a bit lighter.
+    expect(await opacity("gain", 1)).toBeLessThan(0.05);
+    expect(await opacity("loss", 0)).toBeLessThan(0.05);
+
+    // The strong end is a wash, not a fill. At 0.72 the ramp read as a solid block of
+    // colour with a thin fade at the bottom, which is the opposite of the intended
+    // effect: the gridlines and the breakeven markers behind it were lost. Half opacity
+    // is the ceiling for something the curve is meant to be read *through*.
+    expect(await opacity("gain", 0)).toBeLessThan(0.5);
+    expect(await opacity("loss", 1)).toBeLessThan(0.5);
+  });
+
+  it("still meets the axis after a Leg moves", async () => {
+    // The case that survived two fixes: correct on load, wrong the moment a strike moved.
+    // The old gradient was referenced by id, and browsers do not reliably repaint a
+    // reference whose target changed only in an attribute - so asserting on a freshly
+    // loaded page could never have caught it.
+    const before = await page.locator("table.kv").innerText();
+
+    const slider = page.locator(".leg-card").nth(0).locator("input[type=range]");
+    await slider.focus();
+    for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
+
+    // Waited on the *figures*, not the URL. The address bar is rewritten synchronously
+    // with the gesture and the curve arrives when the engine answers, so measuring on the
+    // URL measures a chart that has not been redrawn yet.
+    await page.waitForFunction(
+      (was) => document.querySelector("table.kv")?.textContent !== was,
+      before,
+    );
+
+    const box = await geometry();
+    expect(box.gainBottom!).toBeLessThanOrEqual(box.zero! + 1);
+    expect(box.lossTop!).toBeGreaterThanOrEqual(box.zero! - 1);
+  });
+
+  it("leaves room for the forward label rather than clipping it", async () => {
+    // The label sits above the plot area, and an 8px top margin cut it in half. It is
+    // rendered inside the SVG, so this asserts it is actually within the frame.
+    const label = page.locator("svg.recharts-surface text", { hasText: "forward" }).first();
+    const box = (await label.boundingBox())!;
+    const chart = (await page.locator("svg.recharts-surface").boundingBox())!;
+
+    expect(box.y).toBeGreaterThanOrEqual(chart.y);
   });
 });
 
@@ -283,8 +735,10 @@ describe("the theme", () => {
     );
     await dark.waitForSelector("svg.recharts-surface");
 
+    // `.recharts-line-curve`, not `.recharts-area-curve`: the curve is its own `Line`
+    // since the fill was split into two Areas, and both of those carry `stroke="none"`.
     const stroke = await dark.evaluate(() => {
-      const curve = document.querySelector("svg.recharts-surface .recharts-area-curve");
+      const curve = document.querySelector("svg.recharts-surface .recharts-line-curve");
       return curve ? getComputedStyle(curve).stroke : null;
     });
     expect(stroke).toBe("rgb(230, 237, 243)"); // --ink dark, #e6edf3

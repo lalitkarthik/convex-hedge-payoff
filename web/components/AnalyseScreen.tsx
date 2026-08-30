@@ -1,19 +1,18 @@
 "use client";
 
-import { useCallback, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 
 import GreeksTable from "./GreeksTable";
 import Header from "./Header";
-import LegsStrip from "./LegsStrip";
+import LegEditor from "./LegEditor";
 import MetricsPanel from "./MetricsPanel";
 import PayoffChart from "./PayoffChart";
 import PayoffTable from "./PayoffTable";
-import StrikeSlider from "./StrikeSlider";
 
+import { ApiError, postAnalysis } from "@/lib/api";
+import { answered, asking, edit, failed, shouldAsk, start } from "@/lib/analysing";
 import { istClock } from "@/lib/format";
 import { strategyHref, type View } from "@/lib/strategy-url";
-import { legalStrikes, withStrike } from "@/lib/strikes";
 import type {
   AnalysisResponse,
   ChainResponse,
@@ -23,22 +22,40 @@ import type {
 } from "@/lib/types";
 
 /**
- * The analysis, rendered. **Nothing here computes anything.**
+ * The analysis, rendered — and, since the Strategy became editable here, re-asked.
  *
- * Every figure on this screen arrived in one `POST /analyse`: the curve, the four
- * metrics, the per-Leg Greeks, the strategy total and the payoff table.
+ * **Nothing on this screen computes anything.** Every figure arrived in a `POST /analyse`:
+ * the curve, the four metrics, the per-Leg Greeks, the strategy total and the payoff
+ * table. What changed is who sends that request. The first one is the server component's;
+ * every one after it is this component's, straight from the browser through the
+ * same-origin `/api` rewrite. The engine is still the only thing that prices.
  *
- * Two pieces of client state, and both are ephemeral interface state which #32 keeps
- * *out* of the URL: which tab is open, and which Leg the strike slider points at.
- * Nobody wants a shared link that forces them onto the sender's open tab, and which row
- * is highlighted is not part of the Strategy.
+ * ## Why the page stopped re-rendering
  *
- * **Moving a strike still computes nothing here.** It rewrites the address bar and lets
- * the server component render again, exactly as the Chain page does - so the answer on
- * screen is always one the engine gave, never one the client interpolated between two.
+ * Editing used to mean `router.replace`, which re-runs `app/analyse/page.tsx` - four
+ * backend calls and the whole tree replaced, dimmed by `.main.pending` on the way. That is
+ * fine for a control you nudge and unusable for one you drag, which is what the strike
+ * slider is.
  *
- * The three tabs are always present. A disabled tab advertises an absence; these are all
- * derived from the same response, so switching costs no request.
+ * So the URL is written with `window.history.replaceState` instead. It updates the address
+ * bar without waking the router, so the link stays copyable and still reproduces this
+ * screen in a cold tab - #32's whole point - while no longer being the transport for every
+ * tick of a gesture. `router.replace` never pushed history entries either, so back and
+ * forward behave exactly as they did.
+ *
+ * The state that results is `lib/analysing.ts`, and it is a separate module because the
+ * hard part is invisible: sixty questions a second come back in whatever order the network
+ * likes, and an answer allowed to arrive late settles the screen on a strike the thumb has
+ * already left. That rule is asserted there without a browser; this file supplies the
+ * clock, the timer and the `fetch`, and decides nothing.
+ *
+ * A fresh URL - a pasted link, or the back button - remounts this component, because
+ * `page.tsx` keys it on the encoded Legs. So the server's answer wins whenever the server
+ * is the one that spoke last, and no reconciliation is needed between the two.
+ *
+ * The Strategy itself is edited in `LegEditor`, which is where the Chain fetched by this
+ * page is actually spent: a ladder per Leg to drag along, and a price to re-read whenever
+ * a Leg lands somewhere new.
  */
 
 type Tab = "pnl" | "greeks" | "table";
@@ -60,31 +77,57 @@ export default function AnalyseScreen({
 }) {
   const [tab, setTab] = useState<Tab>("pnl");
 
-  // Clamped rather than trusted: the Strategy can lose a Leg between renders, and an
-  // index left pointing past the end would read `undefined.strike`.
-  const [picked, setPicked] = useState(0);
-  const selected = Math.min(picked, Math.max(0, legs.length - 1));
-  const leg = legs[selected];
+  // The server's render is question zero, already answered. Everything after it is ours.
+  const [state, setState] = useState(() => start(legs, analysis));
 
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-
-  // The Chain page's pattern, verbatim except for the path. `replace` rather than
-  // `push` so dragging a slider does not fill the back button with every strike it
-  // passed over, and `scroll: false` so the page does not jump on each commit.
-  const go = useCallback(
+  const apply = useCallback(
     (next: LegRequest[]) => {
-      startTransition(() =>
-        router.replace(strategyHref("/analyse", view, next), { scroll: false }),
-      );
+      setState((current) => edit(current, next));
+      // Synchronous with the gesture rather than in an effect: the address bar is the
+      // thing a trader copies, and it should never be a frame behind what is on screen.
+      window.history.replaceState(null, "", strategyHref("/analyse", view, next));
     },
-    [router, view],
+    [view],
   );
+
+  /*
+   * Ask, whenever there is something to ask and nothing already in flight.
+   *
+   * There is no timer here and that is the point. This was a 120ms throttle, which held a
+   * drag to eight updates a second no matter how fast the engine answered - and it
+   * answers in about ten milliseconds. The curve moved in visible steps because of a
+   * constant, not because of the engine.
+   *
+   * The effect re-runs on every settle, so the next question goes out the instant the
+   * last answer lands. Twenty ticks of a drag arriving during one request produce exactly
+   * one more request, for wherever the thumb actually ended up.
+   */
+  useEffect(() => {
+    if (!shouldAsk(state)) return;
+
+    const seq = state.issued;
+    const legs = state.legs;
+    setState((current) => asking(current, seq));
+
+    postAnalysis({ moment: view.moment, legs })
+      .then((next) => setState((current) => answered(current, seq, next)))
+      .catch((error) =>
+        setState((current) =>
+          failed(
+            current,
+            seq,
+            error instanceof ApiError && error.detail ? error.detail : String(error),
+          ),
+        ),
+      );
+  }, [state, view.moment]);
+
+  const current = state.analysis;
 
   return (
     <div className="shell">
       <Header summary={summary}>
-        <a className="back" href={strategyHref("/", view, legs)}>
+        <a className="back" href={strategyHref("/", view, state.legs)}>
           ← Chain
         </a>
         {/* Which day and which series, as text rather than as the Chain's two dropdowns:
@@ -98,8 +141,8 @@ export default function AnalyseScreen({
       </Header>
 
       <div className="body analyse-body">
-        <main className={`main analyse-main ${pending ? "pending" : ""}`}>
-          {legs.length === 0 ? (
+        <main className="main analyse-main">
+          {state.legs.length === 0 ? (
             <p className="empty">
               No Legs in this link. Go back to the Chain and pick some — the analysis is of a
               Strategy, and an empty Strategy is a flat line at zero.
@@ -109,9 +152,10 @@ export default function AnalyseScreen({
               {/* The Forward, not Spot: the axis is in Forward, and a reference line
                   has to stand on the axis it is drawn against (#72). */}
               <PayoffChart
-                curve={analysis.curve}
-                forward={analysis.forward}
-                breakevens={analysis.metrics.breakevens}
+                curve={current.curve}
+                frame={current.table}
+                forward={current.forward}
+                breakevens={current.metrics.breakevens}
               />
               <div className="tabs" role="tablist">
                 <button role="tab" aria-selected={tab === "pnl"} onClick={() => setTab("pnl")}>
@@ -125,20 +169,40 @@ export default function AnalyseScreen({
                 </button>
               </div>
 
-              {tab === "pnl" && <MetricsPanel metrics={analysis.metrics} />}
-
-              {tab === "greeks" && (
+              {/*
+                A refusal replaces the numbers and leaves the curve alone. The engine has
+                declined to answer for the Strategy as it now stands, so publishing metrics
+                beside that message would be publishing the previous position's - but the
+                curve on screen is still a real answer about a real Strategy, and blanking
+                it would cost more than it says.
+              */}
+              {state.problem ? (
+                <p className="refusal" role="status">
+                  {state.problem}
+                </p>
+              ) : (
                 <>
-                  <GreeksTable legs={legs} rows={analysis.greeks} total={analysis.total_greeks} />
-                  <p className="note">
-                    Per contract, no Lot Size. Δ and Γ are undiscounted, so Δ is bounded by 1 and
-                    a call's Δ less its put's is exactly 1. Θ is one trading session.
-                  </p>
-                </>
-              )}
+                  {tab === "pnl" && <MetricsPanel metrics={current.metrics} />}
 
-              {tab === "table" && (
-                <PayoffTable table={analysis.table} forward={analysis.forward} />
+                  {tab === "greeks" && (
+                    <>
+                      <GreeksTable
+                        legs={state.legs}
+                        rows={current.greeks}
+                        total={current.total_greeks}
+                      />
+                      <p className="note">
+                        Per contract, no Lot Size. Δ and Γ are undiscounted, so Δ is bounded by 1
+                        and a call&apos;s Δ less its put&apos;s is exactly 1. Θ is one trading
+                        session.
+                      </p>
+                    </>
+                  )}
+
+                  {tab === "table" && (
+                    <PayoffTable table={current.table} forward={current.forward} />
+                  )}
+                </>
               )}
             </>
           )}
@@ -146,41 +210,16 @@ export default function AnalyseScreen({
 
         <aside className="panel">
           <h2>
-            Strategy — {legs.length} {legs.length === 1 ? "Leg" : "Legs"}
+            Strategy — {state.legs.length} {state.legs.length === 1 ? "Leg" : "Legs"}
           </h2>
-          {/*
-            Direction, Quantity and Entry Premium are still the Chain's job, where the
-            quote a Leg is priced against is on screen beside it. The strike is editable
-            here because the Chain now *is* on screen - the slider offers only what this
-            minute quotes, so this is not editing blind.
-          */}
-          <LegsStrip legs={legs} readOnly selected={selected} onSelect={setPicked} />
-
-          {leg && (
-            <>
-              <h2>Strike</h2>
-              <StrikeSlider
-                strikes={legalStrikes(chain.rows, leg.option_type)}
-                strike={leg.strike}
-                optionType={leg.option_type}
-                disabled={pending}
-                onCommit={(strike) => go(withStrike(legs, selected, strike))}
-              />
-              {legs.length > 1 && (
-                <p className="note">
-                  Moving the {legs.length === 2 ? "other" : "another"} Leg? Pick its row above.
-                </p>
-              )}
-            </>
-          )}
+          <LegEditor legs={state.legs} chain={chain} onChange={apply} />
           {/* Spot is still here, and deliberately (#72). It stopped being the axis; it
               did not stop being observed, and it is the one figure on this line that is
               measured rather than fitted. */}
           <p className="note">
-            Forward {analysis.forward.toFixed(2)} · discount {analysis.discount.toFixed(6)} ·
-            spot {analysis.spot.toFixed(2)}. The chart and the table are drawn in Forward.
-            Every figure on this page came from one request, so none of them can be as-of a
-            different minute.
+            Forward {current.forward.toFixed(2)} · discount {current.discount.toFixed(6)} · spot{" "}
+            {current.spot.toFixed(2)}. The chart and the table are drawn in Forward. Every figure
+            on this page came from one request, so none of them can be as-of a different minute.
           </p>
         </aside>
       </div>

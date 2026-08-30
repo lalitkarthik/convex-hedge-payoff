@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { decodeLegs, encodeLegs } from "./legs-url";
-import { legalStrikes, nearestIndex, withStrike } from "./strikes";
+import { addLeg, legalStrikes, moveLeg, nearestIndex, quoteAt } from "./strikes";
 import type { ChainRow, LegRequest } from "./types";
 
 /**
@@ -17,18 +17,22 @@ import type { ChainRow, LegRequest } from "./types";
  *
  * The shape below is the anchor's in miniature: 50 of its 91 strikes quote one side
  * only, so a row that is present but blank on the side asked for is the common case.
+ * Every quote carries a **different** last traded price, which is what makes repricing
+ * observable - with one price everywhere, a Leg that kept the old strike's premium and
+ * a Leg that was correctly repriced would be indistinguishable.
  */
 
 const EXPIRY = "10FEB26";
+const FORWARD = 25219.12;
 
-const quote = { last: 100, open_interest: 0, volume: 0, age_minutes: 0, delta: 0.5 };
+const q = (last: number) => ({ last, open_interest: 0, volume: 0, age_minutes: 0, delta: 0.5 });
 
 const ROWS: ChainRow[] = [
-  { strike: 25000, iv: 0.12, call: quote, put: quote },
-  { strike: 25100, iv: 0.12, call: quote, put: null }, //   call only
-  { strike: 25200, iv: 0.12, call: quote, put: quote },
-  { strike: 25300, iv: 0.12, call: null, put: quote }, //   put only
-  { strike: 25400, iv: null, call: quote, put: quote }, //  quoted both sides, no vol
+  { strike: 25000, iv: 0.12, call: q(410.5), put: q(210.25) },
+  { strike: 25100, iv: 0.12, call: q(360.75), put: null }, //  call only
+  { strike: 25200, iv: 0.12, call: q(344.05), put: q(326.7) },
+  { strike: 25300, iv: 0.12, call: null, put: q(402.15) }, //  put only
+  { strike: 25400, iv: null, call: q(1), put: q(1) }, //       both sides, no volatility
 ];
 
 describe("legalStrikes", () => {
@@ -100,29 +104,53 @@ describe("nearestIndex", () => {
   });
 });
 
-describe("withStrike", () => {
+describe("quoteAt", () => {
+  test("finds the quote on the side asked for", () => {
+    expect(quoteAt(ROWS, 25200, "CE")?.last).toBe(344.05);
+    expect(quoteAt(ROWS, 25200, "PE")?.last).toBe(326.7);
+  });
+
+  test("a side that is not quoted is null, never the other side's quote", () => {
+    // 25,100 is a call-only strike. Falling back to the put here would price a Leg at a
+    // contract nobody asked for, and the two prices differ by 150 points.
+    expect(quoteAt(ROWS, 25100, "PE")).toBeNull();
+  });
+
+  test("a strike the Chain does not carry is null", () => {
+    expect(quoteAt(ROWS, 99999, "CE")).toBeNull();
+  });
+});
+
+describe("moveLeg", () => {
   const STRADDLE: LegRequest[] = [
     { strike: 25200, option_type: "CE", expiry: EXPIRY, direction: -1, quantity: 1, entry_premium: 344.05 },
     { strike: 25200, option_type: "PE", expiry: EXPIRY, direction: -1, quantity: 1, entry_premium: 326.7 },
   ];
 
-  test("the Entry Premium of the moved Leg is dropped, not carried", () => {
-    // The assertion this whole feature turns on. `entry_premium` is optional on the
-    // wire, and absent means "read the Chain's last traded price at this strike".
-    // Carried, 344.05 would be honoured at the new strike - the server cannot tell a
-    // stale premium from a deliberate "what if I had entered at X", because both arrive
-    // as a bare float - and the published Breakeven would move to 25,944.05. Wrong,
-    // with nothing on screen saying so.
-    const moved = withStrike(STRADDLE, 0, 25600);
+  test("the moved Leg never keeps the old strike's premium", () => {
+    // The assertion this whole feature turns on, and the one that survived a change of
+    // mechanism. `entry_premium` is a bare float on the wire, so the server cannot tell
+    // a premium left over from the old strike from a deliberate "what if I had entered
+    // at X" - and a short 25,200 call dragged to 25,100 still claiming 344.05 publishes
+    // a Breakeven that is wrong with nothing on screen contradicting it.
+    const moved = moveLeg(STRADDLE, 0, { strike: 25100 }, ROWS)[0]!;
 
-    expect(moved[0]!.strike).toBe(25600);
-    expect(moved[0]!.entry_premium).toBeUndefined();
+    expect(moved.strike).toBe(25100);
+    expect(moved.entry_premium).not.toBe(344.05);
+  });
+
+  test("it is repriced from the Chain, not blanked", () => {
+    // What changed. Leaving the field absent also satisfied the test above - absent
+    // means "server, read the Chain's last" and the server would have found this very
+    // number. But the client is now holding the Chain, so it can say the price instead
+    // of asking for it, and the box on screen shows 360.75 rather than a placeholder.
+    expect(moveLeg(STRADDLE, 0, { strike: 25100 }, ROWS)[0]!.entry_premium).toBe(360.75);
   });
 
   test("everything else about the moved Leg survives", () => {
     // Direction is separate from Quantity (CONTEXT.md): sold two is direction -1 and
     // quantity 2, never quantity -2. Losing either here would redraw the curve.
-    const moved = withStrike(STRADDLE, 0, 25600)[0]!;
+    const moved = moveLeg(STRADDLE, 0, { strike: 25100 }, ROWS)[0]!;
 
     expect(moved.option_type).toBe("CE");
     expect(moved.direction).toBe(-1);
@@ -130,35 +158,104 @@ describe("withStrike", () => {
     expect(moved.expiry).toBe(EXPIRY);
   });
 
+  test("flipping to a side that quotes the same strike keeps the strike", () => {
+    const flipped = moveLeg(STRADDLE, 0, { option_type: "PE" }, ROWS)[0]!;
+
+    expect(flipped.strike).toBe(25200);
+    expect(flipped.option_type).toBe("PE");
+    expect(flipped.entry_premium).toBe(326.7);
+  });
+
+  test("flipping to a side that does not quote the strike snaps to one that does", () => {
+    // The ladders are genuinely per-side - 50 of the anchor's 91 strikes quote one side
+    // only - so a flip that kept the strike would land the Leg on a contract the engine
+    // cannot price, which is the 404 the whole ladder design exists to make unreachable.
+    const leg: LegRequest[] = [
+      { strike: 25100, option_type: "CE", expiry: EXPIRY, direction: 1, quantity: 1, entry_premium: 360.75 },
+    ];
+    const flipped = moveLeg(leg, 0, { option_type: "PE" }, ROWS)[0]!;
+
+    expect(legalStrikes(ROWS, "PE")).toContain(flipped.strike);
+    expect(flipped.entry_premium).toBe(quoteAt(ROWS, flipped.strike, "PE")!.last);
+    // 25,000 and 25,200 are both 100 away; `nearestIndex` resolves a tie low and does so
+    // on every render, which is what stops the thumb jittering between two rungs.
+    expect(flipped.strike).toBe(25000);
+  });
+
   test("the other Legs are untouched, premium included", () => {
-    // Only the Leg being dragged is being repriced. A sibling's Entry Premium may be a
-    // deliberate override, and dropping it would silently rewrite a Breakeven the
-    // trader set on purpose.
-    expect(withStrike(STRADDLE, 0, 25600)[1]).toEqual(STRADDLE[1]!);
+    // Only the Leg being moved is repriced. A sibling's Entry Premium may be a
+    // deliberate override, and rewriting it would move a Breakeven the trader set.
+    expect(moveLeg(STRADDLE, 0, { strike: 25100 }, ROWS)[1]).toEqual(STRADDLE[1]!);
   });
 
   test("the input array is not mutated", () => {
     const before = structuredClone(STRADDLE);
-    withStrike(STRADDLE, 0, 25600);
+    moveLeg(STRADDLE, 0, { strike: 25100 }, ROWS);
     expect(STRADDLE).toEqual(before);
   });
 
-  test("moving a Leg to the strike it already has changes nothing but the premium", () => {
-    // Worth pinning: this is what a drag that returns to its origin does. The premium
-    // still goes, and it should - the server will read the same price back off the
-    // Chain, so the result is identical without the client having to assert that.
-    const same = withStrike(STRADDLE, 0, 25200)[0]!;
-    expect(same.strike).toBe(25200);
-    expect(same.entry_premium).toBeUndefined();
+  test("a target with no quote leaves the premium absent rather than zero", () => {
+    // Unreachable through the slider, which offers only quoted rungs - and asserted
+    // anyway, because `legs-url.ts` is explicit that a 0 here analyses a free option.
+    // Absent is the honest answer: the server will refuse the Leg, and a refusal beats
+    // a curve drawn against a price of nothing.
+    const moved = moveLeg(STRADDLE, 0, { strike: 99999 }, ROWS)[0]!;
+
+    expect(moved.strike).toBe(99999);
+    expect(moved.entry_premium).toBeUndefined();
   });
 
-  test("the dropped premium really leaves the URL", () => {
-    // The codec writes `@<premium>` only when the field is present, and warns that a 0
-    // there would analyse a free option. So the field must be *absent*, not zero, and
-    // this round trip is what proves the difference reaches the address bar.
-    const url = encodeLegs(withStrike(STRADDLE, 0, 25600));
+  test("an index past the end returns the Strategy unchanged", () => {
+    expect(moveLeg(STRADDLE, 7, { strike: 25100 }, ROWS)).toEqual(STRADDLE);
+  });
 
-    expect(url).toBe("25600CE10FEB26S1,25200PE10FEB26S1@326.7");
-    expect(decodeLegs(url)[0]!.entry_premium).toBeUndefined();
+  test("the new strike and its new price both reach the URL", () => {
+    // The round trip is what proves the address bar names a position that reproduces.
+    // The premium is now written rather than omitted, so the link means the same thing
+    // against tomorrow's Chain as it does against this one.
+    const url = encodeLegs(moveLeg(STRADDLE, 0, { strike: 25100 }, ROWS));
+
+    expect(url).toBe("25100CE10FEB26S1@360.75,25200PE10FEB26S1@326.7");
+    expect(decodeLegs(url)[0]!.entry_premium).toBe(360.75);
+  });
+});
+
+describe("addLeg", () => {
+  const STRADDLE: LegRequest[] = [
+    { strike: 25200, option_type: "CE", expiry: EXPIRY, direction: -1, quantity: 1, entry_premium: 344.05 },
+  ];
+
+  test("appends a bought call at the strike nearest the Forward, priced from the Chain", () => {
+    const added = addLeg(STRADDLE, ROWS, FORWARD, EXPIRY);
+
+    expect(added).toHaveLength(2);
+    expect(added[1]).toEqual({
+      strike: 25200,
+      option_type: "CE",
+      expiry: EXPIRY,
+      direction: 1,
+      quantity: 1,
+      entry_premium: 344.05,
+    });
+  });
+
+  test("nearest the Forward, not nearest Spot", () => {
+    // 25,100 is the nearest rung to the anchor's spot of 25,100.25 and 25,200 is the
+    // nearest to its Forward. Same rule as the star (#72), and the same rule the ITM
+    // wash follows - three places on this screen measure moneyness and they agree.
+    expect(addLeg([], ROWS, 25100.25, EXPIRY)[0]!.strike).toBe(25100);
+    expect(addLeg([], ROWS, FORWARD, EXPIRY)[0]!.strike).toBe(25200);
+  });
+
+  test("the existing Legs come through untouched", () => {
+    expect(addLeg(STRADDLE, ROWS, FORWARD, EXPIRY)[0]).toEqual(STRADDLE[0]!);
+  });
+
+  test("a Chain quoting no calls adds nothing rather than an unpriceable Leg", () => {
+    // The first minute of a date can quote nothing at all. Appending a Leg with no
+    // strike would put the whole Strategy into the engine's refusal path, so the button
+    // does nothing instead - which the caller renders as a disabled button.
+    const noCalls: ChainRow[] = [{ strike: 25300, iv: 0.12, call: null, put: q(402.15) }];
+    expect(addLeg(STRADDLE, noCalls, FORWARD, EXPIRY)).toEqual(STRADDLE);
   });
 });

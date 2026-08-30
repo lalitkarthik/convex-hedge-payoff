@@ -60,7 +60,36 @@ line.
 which is a Spot-to-Forward conversion with the basis assumed to be zero - and it is
 +118.87 at the anchor, so the window sat 118.87 points to the left of the axis it was
 drawn on. Nothing looked wrong, because a window is symmetric about whatever it is
-handed."""
+handed.
+
+**A floor, not the whole rule.** A Strategy whose strikes fall outside this widens it -
+see `curve`. This is the frame a Strategy near the money gets, and the least any Strategy
+gets."""
+
+WING_MARGIN = 0.02
+"""How far past the outermost strike the window runs, once a wing has pushed it out.
+
+A corner drawn flush against the frame is indistinguishable from a curve that was cut off
+there - which is the failure this widening exists to fix - so the flat beyond the wing has
+to be visibly flat. 2% is about 500 points on this chain, ten strike intervals.
+
+Taken off the strike rather than off the Forward, so it scales with where the wing is and
+a Strategy far from the money is not framed by a number derived from a Forward it is
+nowhere near."""
+
+ZOOM_HEADROOM = 3.0
+"""How much wider than the frame the *curve* is sent, so that zooming out has somewhere
+to go.
+
+The frame is what a trader opens on. If the curve stopped there, both zoom-out controls
+would be no-ops from the first frame: a window wider than its data draws as blank axis,
+which reads as a broken chart rather than as the end of the data, so the browser refuses
+to go there and is right to.
+
+**This costs nothing in accuracy.** P&L at Expiry is piecewise linear and every corner is
+placed exactly (#70), so a span three times wider is described exactly as well by the same
+400 points - the grid decides how smooth the straight bits look, not whether they are
+right. It costs three times the JSON, which is why it is 3 and not 30."""
 
 
 class MixedExpiry(ValueError):
@@ -247,10 +276,30 @@ def curve(legs: list[Leg], forward_centre: float) -> Curve:
 
     **Centred on the Forward** (#72), which is what the axis is measured in. It was
     centred on Spot, and the two are 118.87 apart at the anchor.
+
+    **And then widened to hold every strike in the Strategy.** +/-6% is a good frame for a
+    Strategy trading near the money and no frame at all for one that is not: an iron
+    butterfly with wings at 23,500 and 26,900 has both of them outside the window at the
+    anchor, so the chart ran off each edge still descending and drew a capped loss as an
+    uncapped one. Widening here rather than in the browser is forced - a client cannot
+    zoom out to points that were never sent, whatever its zoom control does.
+
+    The base window is still Forward-centred and the result usually still is, because most
+    Strategies sit inside it and nothing widens. What is *not* preserved is symmetry: a
+    Strategy with one far wing extends on that side alone, because the alternative is
+    mirroring dead space onto the other side to keep a property no one is reading. #72's
+    argument is untouched - it is about measuring in Forward rather than in Spot, and both
+    edges here are still multiples of the Forward.
     """
     low, high = forward_domain()
-    left = max(forward_centre * (1 - FORWARD_RANGE), low)
-    right = min(forward_centre * (1 + FORWARD_RANGE), high)
+    framed_left, framed_right = _frame(legs, forward_centre)
+
+    # Widened about the frame's own centre, so the frame keeps its place inside the result
+    # and a Strategy with one far wing does not get all its headroom on that side.
+    centre = (framed_left + framed_right) / 2
+    reach = (framed_right - framed_left) * ZOOM_HEADROOM / 2
+    left = max(centre - reach, low)
+    right = min(centre + reach, high)
 
     grid = np.linspace(left, right, CURVE_POINTS)
     corners = _corners(legs)
@@ -281,11 +330,39 @@ def payoff_table(legs: list[Leg], forward_centre: float, step: float = TABLE_STE
     the rows are 25,150 and 25,200 rather than 25,144.235 and 25,194.235 - and so the
     strike itself is a row, which matters because that is where a straddle peaks.
     """
-    low = np.ceil(forward_centre * (1 - FORWARD_RANGE) / step) * step
-    high = np.floor(forward_centre * (1 + FORWARD_RANGE) / step) * step
+    framed_left, framed_right = _frame(legs, forward_centre)
+    low = np.ceil(framed_left / step) * step
+    high = np.floor(framed_right / step) * step
     grid = np.arange(low, high + step / 2, step)
     pnl = pnl_at_expiry(grid, legs)
     return Curve(forward=[float(f) for f in grid], pnl_at_expiry=[float(p) for p in pnl])
+
+
+def _frame(legs: list[Leg], forward_centre: float) -> tuple[float, float]:
+    """The window a trader opens on: what the chart frames and what the table lists.
+
+    **Shared, because the two must not disagree.** They were separately derived for one
+    commit, and in that commit the chart drew an iron butterfly's corner at 23,500 while
+    the table beneath it started at 23,750 and had no row for it. "One computation, two
+    presentations" is the claim `payoff_table` makes about itself, and two windows is the
+    cheapest possible way to make it false.
+
+    +/-`FORWARD_RANGE` of the Forward, widened to hold every strike with `WING_MARGIN` to
+    spare. Not clipped to the stored domain here - the callers clip, and they clip to
+    different things: the curve to the domain it interpolates over, the table to the grid
+    it snaps to.
+    """
+    left = forward_centre * (1 - FORWARD_RANGE)
+    right = forward_centre * (1 + FORWARD_RANGE)
+
+    # The strikes themselves, not `_corners`, which appends the domain's own two ends and
+    # would widen every frame to the whole 0..55,900 the manifest publishes.
+    strikes = [leg.strike for leg in legs]
+    if strikes:
+        left = min(left, min(strikes) * (1 - WING_MARGIN))
+        right = max(right, max(strikes) * (1 + WING_MARGIN))
+
+    return left, right
 
 
 def _corners(legs: list[Leg]) -> np.ndarray:

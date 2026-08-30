@@ -457,3 +457,117 @@ def test_text_that_is_not_an_expiry_says_so_rather_than_returning_nothing(client
     )
     assert response.status_code == 422, response.text
     assert "10FEB26" in response.json()["detail"], "the form, shown rather than described"
+
+
+def test_the_window_widens_to_hold_a_structure_whose_wings_fall_outside_it(client):
+    """An iron butterfly's bought wings are off the +/-6% window, and were undrawable.
+
+    +/-6% of the Forward is 23,705.97 to 26,732.26 at the anchor. This structure's wings
+    are at 23,500 and 26,900 - both outside it - so the chart drew the body, ran off the
+    frame in each direction still descending, and showed neither the corner where the
+    loss stops growing nor the flat maximum loss beyond it. A trader reading it would
+    have seen an unbounded loss on a structure whose whole point is that the loss is
+    capped, which is the most consequential thing a payoff chart can get wrong.
+
+    Zooming out could not have rescued it: there is nothing to zoom out *to*, because the
+    curve the engine returned stopped at 26,732.26 as well. The window is what has to
+    widen, and it widens here rather than in the browser - the browser cannot interpolate
+    points that were never sent.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": 23500.0, "option_type": "PE", "direction": 1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": 26900.0, "option_type": "CE", "direction": 1},
+        ],
+    ).json()
+    points = body["curve"]["forward"]
+
+    assert min(points) < 23500.0, "the bought put's corner is inside the window"
+    assert max(points) > 26900.0, "and so is the bought call's"
+
+    # Past the wings the structure is flat, and the chart has to show enough of that flat
+    # to read as flat rather than as a curve that was cut off. Max loss is -1,065.05 here.
+    assert body["metrics"]["max_loss"] == pytest.approx(-1065.05, abs=0.01)
+    left = [p for f, p in zip(points, body["curve"]["pnl_at_expiry"]) if f < 23500.0]
+    assert left, "there are points beyond the left wing"
+    assert all(p == pytest.approx(-1065.05, abs=0.01) for p in left), "and they are flat"
+
+
+def test_a_structure_that_fits_keeps_the_frame_it_had(client):
+    """The widening is driven by the Legs, so a Strategy inside +/-6% must not move it.
+
+    Widening the *frame* unconditionally - to the whole stored domain, say, which runs to
+    55,900 - would make every ordinary straddle a flat line across a chart eleven times
+    too wide. The framing is what is preserved here, and this is the test that fails if a
+    later change makes it a constant again, or forgets that it is the Legs that move it.
+
+    Read off the **table**, which is published on this same response and is the frame: the
+    curve deliberately runs wider than what a trader opens on, so that there is somewhere
+    to zoom out to. The next test is the one that asserts that.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+        ],
+    ).json()
+    table = body["table"]["forward"]
+    forward = body["forward"]
+
+    # Snapped to the 50-point strike grid, so within one step of +/-6% on each side.
+    assert min(table) == pytest.approx(forward * 0.94, abs=50.0)
+    assert max(table) == pytest.approx(forward * 1.06, abs=50.0)
+
+
+def test_the_curve_runs_wider_than_the_frame_so_there_is_room_to_zoom_out(client):
+    """A chart whose data stops at the opening view cannot be zoomed out at all.
+
+    That was the state after the frame learned to hold the wings: the window fitted the
+    structure exactly, and both zoom-out controls were no-ops from the first frame,
+    because the browser will not draw a window wider than the data behind it - it would
+    be blank axis, and blank axis reads as a broken chart rather than as the end of the
+    data.
+
+    So the curve is sent wider than the frame. Nothing is lost by it and nothing is
+    approximated: P&L at Expiry is piecewise linear and every corner is placed exactly
+    (#70), so the extra span is described as precisely by 400 points as by 4,000.
+    """
+    body = analyse(
+        client,
+        [
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+        ],
+    ).json()
+    points = body["curve"]["forward"]
+    table = body["table"]["forward"]
+
+    frame = max(table) - min(table)
+    assert max(points) - min(points) > frame * 2, "room to zoom out, not a rounding margin"
+    assert min(points) < min(table), "and on both sides"
+    assert max(points) > max(table)
+
+
+def test_the_table_covers_the_wings_the_chart_now_draws(client):
+    """One computation, two presentations - so they cannot cover two different windows.
+
+    The frame learned to hold an iron butterfly's wings and the table did not follow, so
+    the chart drew a corner at 23,500 that the table beneath it had no row for. Both read
+    the same frame now.
+    """
+    table = analyse(
+        client,
+        [
+            {"strike": 23500.0, "option_type": "PE", "direction": 1},
+            {"strike": STRIKE, "option_type": "PE", "direction": -1},
+            {"strike": STRIKE, "option_type": "CE", "direction": -1},
+            {"strike": 26900.0, "option_type": "CE", "direction": 1},
+        ],
+    ).json()["table"]["forward"]
+
+    assert min(table) <= 23500.0, "the bought put has a row"
+    assert max(table) >= 26900.0, "and so does the bought call"
