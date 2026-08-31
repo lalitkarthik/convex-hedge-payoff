@@ -75,3 +75,68 @@ dependencies, and the engine imports none of it.
 Splitting that file would cut the image substantially. It is a change to the project's
 dependency layout rather than to Docker, so it was recorded and left alone — dev parity with
 the host environment is a defensible reason to keep one list.
+
+## Entrypoints, and stopping cleanly
+
+A container runs one command. When more than one thing must happen, put them in a script
+and make the script that command.
+
+```dockerfile
+COPY docker/engine-entry.sh /entry.sh
+RUN chmod +x /entry.sh          # git on Windows drops the executable bit
+ENTRYPOINT ["/entry.sh"]
+```
+
+Two Windows-specific traps, both silent until they bite:
+
+- **The executable bit.** Git on Windows does not carry it, so the copied script arrives
+  non-executable and the container exits with `permission denied`. Hence the `chmod`.
+- **Line endings.** A CRLF script fails with `bad interpreter: /bin/sh^M`. `.gitattributes`
+  pins `*.sh text eol=lf` so a fresh clone cannot reintroduce it.
+
+End the script with `exec`:
+
+```sh
+exec uvicorn payoff.api:app --host 0.0.0.0 --port 8000
+```
+
+`exec` replaces the shell with uvicorn, so the server becomes the container's main process.
+You can see it worked: the log reads `Started server process [1]` - PID 1. Docker's stop
+signal then reaches the server directly and **stopping takes 2 seconds**. Without `exec` the
+signal goes to the shell, which ignores it, and Docker waits out a ten-second grace period
+before killing the container.
+
+## Ports
+
+```bash
+docker run -p 8000:8000 IMAGE     # host 8000 -> container 8000
+```
+
+Two separate numbers that usually match. Publishing is not enough on its own: the server
+inside must also bind `0.0.0.0`. Bound to `127.0.0.1` it accepts connections only from inside
+its own container - and the logs look perfectly healthy while nothing outside can reach it.
+
+## Volumes
+
+```bash
+docker volume create payoff-runtime
+docker volume ls
+docker volume rm payoff-runtime                            # force the tree to rebuild
+docker run -v payoff-runtime:/app/Data/runtime IMAGE       # named volume
+docker run -v "D:/Convex Hedge/payoff-project:/app" IMAGE  # bind mount
+```
+
+A **bind mount** shows a host directory inside the container - used here for source, so edits
+are live. A **named volume** is storage Docker owns; it survives `--rm` and rebuilds, and is
+where derived data belongs.
+
+A mount **masks** whatever is beneath it. Measured here:
+
+| | |
+|---|---|
+| first start, empty volume | derives the tree, **~55 s** |
+| restart | **4 s**, no derivation |
+
+The empty volume hid the host's already-populated `Data/runtime`, which is why the first run
+derived a tree the host already had. After that the volume holds it, and `--rm` does not touch
+it.
