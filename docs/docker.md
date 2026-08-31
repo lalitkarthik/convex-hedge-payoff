@@ -140,3 +140,79 @@ A mount **masks** whatever is beneath it. Measured here:
 The empty volume hid the host's already-populated `Data/runtime`, which is why the first run
 derived a tree the host already had. After that the volume holds it, and `--rm` does not touch
 it.
+
+## Anonymous volumes, and the node_modules problem
+
+```bash
+docker run -v "D:/repo/web:/app" -v /app/node_modules IMAGE
+```
+
+The second `-v` has no host path. That is an **anonymous volume**, and its only job is to mask
+a path a bind mount would otherwise cover.
+
+Without it, bind-mounting `web/` carries the host's `node_modules` into the container, and two
+independent things break:
+
+1. **Slow.** Every module read crosses the Windows/Linux filesystem boundary.
+2. **Wrong.** The host's `node_modules/.bin` holds `next.exe` and `next.bunx` - Windows shims.
+   Linux cannot run them, and you get `next: command not found`.
+
+The anonymous volume shadows that path so the container keeps the Linux `node_modules` built
+during `docker build`. Compare `.bin` with and without it:
+
+```
+image only     next        nanoid        loose-envify        <- Linux
+host leaking   next.exe    next.bunx     loose-envify.exe    <- Windows
+```
+
+## Git Bash mangles container paths
+
+**This cost real time.** In Git Bash / MSYS, `-v /app/node_modules` silently became:
+
+```
+volume -> C:/Program Files/Git/app/node_modules
+```
+
+MSYS rewrites anything that looks like a POSIX path into a Windows one. The volume mounted
+somewhere irrelevant, the host's Windows `node_modules` stayed exposed, and the container died
+with `next: command not found` - an error that says nothing about mounts.
+
+```bash
+export MSYS_NO_PATHCONV=1        # in Git Bash, before any docker run with -v
+```
+
+PowerShell and cmd are unaffected. **`docker compose` is unaffected too**, because paths come
+from the YAML file rather than through the shell - one more reason to prefer Compose over long
+`docker run` lines.
+
+Diagnose it with:
+
+```bash
+docker inspect CONTAINER --format '{{range .Mounts}}{{.Type}} -> {{.Destination}}{{"
+"}}{{end}}'
+```
+
+## Running a different command
+
+```bash
+docker run --rm IMAGE sh -c "ls node_modules/.bin | head"
+docker exec CONTAINER sh -c "..."      # in an already-running container
+```
+
+Anything after the image name replaces the image's `CMD`. Useful for inspecting an image
+without starting its real workload - which is how the `.bin` comparison above was made.
+
+## 127.0.0.1 means *this container*
+
+Running the frontend alone, without the engine, fails like this:
+
+```
+TypeError: Unable to connect. Is the computer able to access the url?
+GET / 500
+```
+
+Not a bug. `BACKEND_ORIGIN` was unset, so it fell back to `127.0.0.1:8000` - and inside a
+container that address is the container itself, which serves nothing on 8000. The frontend was
+calling itself.
+
+The fix is a hostname the container network can resolve. See **Service names are hostnames**.
