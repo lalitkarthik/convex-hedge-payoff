@@ -31,7 +31,7 @@ State lives in the issues, not in files. If the map and a file disagree, the map
 ```
 python -m venv .venv && source .venv/bin/activate    # .venv\Scripts\activate on Windows
 pip install -r requirements.txt -r requirements-dev.txt
-pytest          # expect: 101 passed
+pytest          # expect: 179 passed
 ruff check .    # expect: no output
 ```
 
@@ -45,6 +45,24 @@ product - so `tests/conftest.py` derives it once per session on the way in, and 
 stays true.
 
 ## Running the website
+
+### With Docker
+
+One command, on a machine that has only Docker installed:
+
+```bash
+docker compose up
+```
+
+Then open **http://localhost:3000**. The engine derives the runtime tree on first start —
+about 55 seconds, once, into a named volume; later starts take about four. Source is
+bind-mounted and both services reload on edit, so no rebuild is needed while working.
+
+`docker compose down` keeps the volume. `docker compose down -v` discards it and forces the
+tree to be derived again. Commands and the traps behind them are in
+[`docs/docker.md`](./docs/docker.md).
+
+### Without Docker
 
 Two processes, and one build before them. The engine serves JSON; the frontend renders it and
 proxies to it, so the browser only ever talks to its own origin and no cross-origin policy
