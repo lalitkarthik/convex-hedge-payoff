@@ -216,3 +216,90 @@ container that address is the container itself, which serves nothing on 8000. Th
 calling itself.
 
 The fix is a hostname the container network can resolve. See **Service names are hostnames**.
+
+## Compose
+
+One file describing several containers and how they connect. It also sidesteps the Git Bash
+path problem above, because paths come from the YAML rather than through the shell.
+
+```bash
+docker compose up              # start everything
+docker compose up --build      # rebuild images first
+docker compose up -d           # background
+docker compose down            # stop, remove containers + network. KEEPS volumes.
+docker compose down -v         # ...and remove named volumes. Forces the tree to rebuild.
+docker compose ps              # what is running
+docker compose logs -f engine  # follow one service
+docker compose exec web sh     # a shell inside a running container
+```
+
+Measured here:
+
+| | |
+|---|---|
+| first `up`, no volume | ~55 s (derives the tree) |
+| `down` | 3 s |
+| `up` again | **4 s**, no derivation |
+
+## Service names are hostnames
+
+Compose puts every service on one network and runs DNS on it. A service name resolves to that
+service's container:
+
+```yaml
+environment:
+  BACKEND_ORIGIN: http://engine:8000     # not 127.0.0.1
+```
+
+Proved from inside the web container:
+
+```
+engine:8000      -> 200 OK
+127.0.0.1:8000   -> FAILED: Unable to connect
+```
+
+Same engine, same port. Inside a container `127.0.0.1` is *that container*, so the frontend
+would be calling itself. No IP address is written down anywhere - though you can see them in
+the logs, where the engine reports requests from `172.18.0.3`, the web container's address on
+the Compose network.
+
+`depends_on` orders startup only; it does not wait for readiness. The frontend proxies per
+request, so the first page load absorbs any lag.
+
+## Live reload needs more than a bind mount
+
+A bind mount makes source **visible** inside the container. It does not make anything **watch**
+it. Next's dev server watches by default; uvicorn does not, so the engine needed telling:
+
+```sh
+exec uvicorn payoff.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src
+```
+
+`--reload-dir` scopes the watcher. Without it uvicorn watches all of `/app`, which here means
+`Data/` (54 MB) and `web/node_modules` - slow, and the engine reads neither as code.
+
+Working reload looks like this in the logs:
+
+```
+WARNING:  StatReload detected changes in 'src/payoff/api.py'. Reloading...
+```
+
+## Debugging a container
+
+```bash
+docker compose logs -f engine        # what did it say
+docker compose exec engine sh        # get inside a running one
+docker compose ps                    # is it even up
+docker inspect NAME --format '{{range .Mounts}}{{.Type}} -> {{.Destination}}{{"
+"}}{{end}}'
+```
+
+If a container exits immediately, `logs` holds the reason. `exec` needs it running - for one
+that will not start, run its image with a shell instead:
+
+```bash
+docker run --rm -it payoff-engine:dev sh
+```
+
+That mount-listing `inspect` is what found the Git Bash path bug: the symptom was
+`next: command not found`, and the cause was only visible in where the volume had landed.

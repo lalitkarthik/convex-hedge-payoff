@@ -13,4 +13,7 @@ if [ "$RUNTIME_CHECK" = "1" ]; then
   python scripts/build_runtime.py --check
 fi
 
-exec uvicorn payoff.api:app --host 0.0.0.0 --port 8000
+# --reload-dir scopes the watcher to src/. Watching all of /app would mean watching
+# Data/ (54 MB) and web/node_modules, which is slow and pointless: the engine reads
+# neither as code.
+exec uvicorn payoff.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src

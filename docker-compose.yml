@@ -1,0 +1,27 @@
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - payoff-runtime:/app/Data/runtime
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    environment:
+      BACKEND_ORIGIN: http://engine:8000
+    depends_on:
+      - engine
+
+volumes:
+  payoff-runtime:
