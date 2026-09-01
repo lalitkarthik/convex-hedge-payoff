@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.ipynb_checkpoints
+Data/runtime
+web/node_modules
+web/.next
+web/tsconfig.tsbuildinfo
+notebooks
+docs
